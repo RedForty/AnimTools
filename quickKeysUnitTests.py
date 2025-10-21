@@ -604,32 +604,9 @@ class QuickKeysTestSuite:
                                         layer=target_layer, sample_by=1, euler_filter=True)
 
                 # Validate - target should now match source exactly despite the other layers
-                # Use WORLD SPACE comparison - this is the ground truth!
+                # Use validate_bake() which has proper quaternion-based rotation comparison
                 times = [1, 25, 50, 75, 100]
-
-                # Get world space transform values for proper validation
-                source_world = self.get_world_transform_values(source, times)
-                target_world = self.get_world_transform_values(target, times)
-
-                attrs = ['translateX', 'translateY', 'translateZ',
-                        'rotateX', 'rotateY', 'rotateZ']
-
-                # Check with relaxed tolerance for rotation accumulation modes
-                errors = []
-                for attr in attrs:
-                    is_rot = attr.startswith('rotate')
-                    for i, time in enumerate(times):
-                        sv = source_world[attr][i]
-                        tv = target_world[attr][i]
-
-                        if is_rot:
-                            sv = self.normalize_rotation(sv)
-                            tv = self.normalize_rotation(tv)
-
-                        diff = abs(sv - tv)
-                        # Use 1.0 degree tolerance for rotation tests
-                        if diff > 1.0:
-                            errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
+                errors = self.validate_bake(source, target, times)
 
                 if errors:
                     all_passed = False
