@@ -433,7 +433,7 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             print(f"  {attr}: {world_values[attr][0]:.6f}")
     # In calculateDeltaValuesFast(), expand the debug:
     print(f"World values being used (should be SOURCE's values):")
-    for attr in ['translateX', 'translateY', 'translateZ', 'rotateX', 'rotateY', 'rotateZ']:
+    for attr in ['translateX', 'translateY', 'translateZ', 'rotateX', 'rotateY', 'rotateZ', 'scaleX', 'scaleY', 'scaleZ']:
         if attr in world_values:
             print(f"  {attr}: {world_values[attr][0]:.6f}")
     # Override layer - just return world values
@@ -561,6 +561,13 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             deltas.append(delta)
 
         delta_values[attr] = deltas
+
+    # DEBUG: Print scale delta values
+    print(f"\n=== SCALE DELTA DEBUG ===")
+    for attr in ['scaleX', 'scaleY', 'scaleZ']:
+        if attr in delta_values:
+            print(f"  {attr} deltas (first 3): {delta_values[attr][:3]}")
+    print("=== END SCALE DEBUG ===\n")
 
     return delta_values
 
