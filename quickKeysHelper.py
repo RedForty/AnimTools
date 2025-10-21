@@ -960,12 +960,14 @@ def eulerFilter(rot_x, rot_y, rot_z):
 # ============================================================================
 
 def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
-                                attrs=None, rotation_order='xyz', euler_filter=False):
+                                attrs=None, rotation_order='xyz', euler_filter=False, source_node=None):
     """
     Ultra-optimized version of setTransformKeysOnLayer.
     Uses caching and direct curve evaluation.
 
     Args:
+        node (str): Target node to set keys on
+        source_node (str): Source node that transform_data came from (for scale query workaround)
         euler_filter (bool): If True, apply euler unwrapping to prevent flips. Default: False
     """
     if layer is None:
@@ -980,7 +982,10 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
     is_matrix = isinstance(first_val, (list, tuple)) and len(first_val) == 16
 
     if is_matrix:
-        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, euler_filter, node=node)
+        # Use source_node for scale query (workaround for animation layer bug)
+        # If source_node not provided, fall back to extracting from matrix
+        scale_query_node = source_node if source_node else None
+        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, euler_filter, node=scale_query_node)
         if attrs:
             attr_values = {k: v for k, v in attr_values.items() if k in attrs}
     else:
@@ -1050,7 +1055,7 @@ def bakeTransformToLayerFast(source_node, target_node, start_time, end_time,
     # Set keys using ultra-fast method
     setTransformKeysOnLayerFast(target_node, matrices, times, layer,
                                 attrs=attrs, rotation_order=rot_order_str,
-                                euler_filter=euler_filter)
+                                euler_filter=euler_filter, source_node=source_node)
 
     print(f"Baked {len(times)} frames from '{source_node}' to '{target_node}' "
           f"on layer '{layer}'")
