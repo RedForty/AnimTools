@@ -24,13 +24,15 @@ class QuickKeysTestSuite:
         print("  - Additive, override, and stacked layers")
         print("  - Muted and weighted layers")
         print("  - All rotation orders and scale modes")
+        print("  - Rotation accumulation modes (component vs layer) with multi-layer stacks")
+        print("  - Multi-layer scenarios with animated weights")
         print("  - Parent, point, and orient constraints")
         print("  - Complex multi-layer scenarios")
         print("  - Parent-child hierarchies")
         print("  - Batch baking multiple objects")
         print("  - Edge cases (negative frames, zero values, single frame)")
         print("  - Error cases (invalid inputs, locked attributes)")
-        print("\nTotal Tests: 26 (21 positive + 4 negative + 1 edge case)")
+        print("\nTotal Tests: 27 (22 positive + 4 negative + 1 edge case)")
         print("="*80)
 
     def create_test_objects(self, name="test"):
@@ -83,8 +85,60 @@ class QuickKeysTestSuite:
             angle += 360
         return angle
 
+    def get_world_transform_values(self, node, times):
+        """Get world space transform values at specific times.
+
+        Returns world space translation, rotation, and scale values.
+        This is the ground truth for validation - do the objects end up in the same place?
+
+        Args:
+            node (str): Node name
+            times (list): Frame numbers to sample
+
+        Returns:
+            dict: {attr: [values]} for translateX/Y/Z, rotateX/Y/Z, scaleX/Y/Z in world space
+        """
+        values = {
+            'translateX': [], 'translateY': [], 'translateZ': [],
+            'rotateX': [], 'rotateY': [], 'rotateZ': [],
+            'scaleX': [], 'scaleY': [], 'scaleZ': []
+        }
+
+        for time in times:
+            # Set time and refresh to ensure proper evaluation
+            cmds.currentTime(time)
+            cmds.refresh()
+
+            # Get world space translation
+            translate = cmds.xform(node, query=True, worldSpace=True, translation=True)
+            values['translateX'].append(translate[0])
+            values['translateY'].append(translate[1])
+            values['translateZ'].append(translate[2])
+
+            # Get world space rotation
+            rotation = cmds.xform(node, query=True, worldSpace=True, rotation=True)
+            values['rotateX'].append(rotation[0])
+            values['rotateY'].append(rotation[1])
+            values['rotateZ'].append(rotation[2])
+
+            # Get scale - query attributes directly for proper layer composition
+            # xform scale queries can be unreliable with animation layers
+            values['scaleX'].append(cmds.getAttr(f"{node}.scaleX"))
+            values['scaleY'].append(cmds.getAttr(f"{node}.scaleY"))
+            values['scaleZ'].append(cmds.getAttr(f"{node}.scaleZ"))
+
+        return values
+
     def compare_curves(self, node, attr, times, tolerance=0.001):
-        """Compare curve values at specific times - with proper layer evaluation."""
+        """Compare curve values at specific times - with proper layer evaluation.
+
+        DEPRECATED: This method reads local-space attribute values after layer composition.
+        For proper validation, use get_world_transform_values() instead to compare
+        world space transforms, which is the ground truth for whether objects match.
+
+        This method is kept for backward compatibility and special cases where you
+        specifically need to inspect local-space curve values.
+        """
         values = []
 
         # Small delay to ensure evaluation completes
@@ -96,33 +150,52 @@ class QuickKeysTestSuite:
 
         return values
 
-    def validate_bake(self, source, target, times, attrs=None, is_rotation=None):
-        """Validate that target matches source at given times.
+    def validate_bake(self, source, target, times, attrs=None, is_rotation=None, tolerance=0.001):
+        """Validate that target matches source at given times using WORLD SPACE values.
+
+        This is the ground truth validation - we compare the final world space transforms
+        to ensure both objects end up in the same position/rotation, regardless of how
+        the animation is stored in layers.
 
         Args:
-            is_rotation: If True, use rotation normalization. If None, auto-detect from attr name.
+            source (str): Source node name
+            target (str): Target node name
+            times (list): Frame numbers to validate
+            attrs (list): Attributes to check (default: all transform attrs)
+            is_rotation: Deprecated, kept for compatibility
+            tolerance (float): Tolerance for comparison (default: 0.001)
+
+        Returns:
+            list: Error messages if validation fails, empty list if passed
         """
         if attrs is None:
             attrs = ['translateX', 'translateY', 'translateZ',
                     'rotateX', 'rotateY', 'rotateZ',
                     'scaleX', 'scaleY', 'scaleZ']
 
+        # Get world space transform values for both source and target
+        source_world = self.get_world_transform_values(source, times)
+        target_world = self.get_world_transform_values(target, times)
+
         errors = []
         for attr in attrs:
-            source_vals = self.compare_curves(source, attr, times)
-            target_vals = self.compare_curves(target, attr, times)
+            source_vals = source_world[attr]
+            target_vals = target_world[attr]
 
             # Determine if this is a rotation attribute
-            is_rot = is_rotation if is_rotation is not None else attr.startswith('rotate')
+            is_rot = attr.startswith('rotate')
 
-            for i, (time, sv, tv) in enumerate(zip(times, source_vals, target_vals)):
+            for i, time in enumerate(times):
+                sv = source_vals[i]
+                tv = target_vals[i]
+
                 if is_rot:
                     # Normalize rotations for comparison
                     sv = self.normalize_rotation(sv)
                     tv = self.normalize_rotation(tv)
 
                 diff = abs(sv - tv)
-                if diff > 0.001:
+                if diff > tolerance:
                     errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
 
         return errors
@@ -361,16 +434,15 @@ class QuickKeysTestSuite:
 
                 # Validate - use slightly relaxed tolerance for rotation orders
                 # due to potential floating point accumulation in matrix conversions
+                # Compare WORLD SPACE values to get ground truth results
                 times = [1, 50, 100]
-                source_vals_all = {}
-                target_vals_all = {}
+
+                # Get world space transform values for proper validation
+                source_world = self.get_world_transform_values(source, times)
+                target_world = self.get_world_transform_values(target, times)
 
                 attrs = ['translateX', 'translateY', 'translateZ',
                         'rotateX', 'rotateY', 'rotateZ']
-
-                for attr in attrs:
-                    source_vals_all[attr] = self.compare_curves(source, attr, times)
-                    target_vals_all[attr] = self.compare_curves(target, attr, times)
 
                 # Check with slightly relaxed tolerance (1.0 instead of 0.001)
                 # for rotation order tests due to gimbal and matrix conversion artifacts
@@ -378,8 +450,8 @@ class QuickKeysTestSuite:
                 for attr in attrs:
                     is_rot = attr.startswith('rotate')
                     for i, time in enumerate(times):
-                        sv = source_vals_all[attr][i]
-                        tv = target_vals_all[attr][i]
+                        sv = source_world[attr][i]
+                        tv = target_world[attr][i]
 
                         if is_rot:
                             sv = self.normalize_rotation(sv)
@@ -400,6 +472,134 @@ class QuickKeysTestSuite:
 
         if all_passed:
             self.log_test(self.current_test, True, "All rotation orders accurate")
+        else:
+            self.log_test(self.current_test, False, "\n".join(errors_list))
+
+    def test_rotation_accumulation_modes(self, qkh):
+        """Test rotation accumulation modes (component vs layer) with multiple animated layers.
+
+        This test mimics real-world production scenarios where:
+        - Target is a member of multiple additive layers (not just one)
+        - Other layers have animation on them
+        - Layer weights can be animated
+        - The tool must correctly account for all layers when calculating deltas
+        """
+        self.current_test = "Rotation Accumulation Modes (Multi-Layer)"
+        print(f"\n--- Test: {self.current_test} ---")
+
+        all_passed = True
+        errors_list = []
+
+        # Test both component and layer modes
+        for mode_idx, mode_name in [(0, 'component'), (1, 'layer')]:
+            source, target = self.create_test_objects(f"test_rotaccum_{mode_name}")
+
+            try:
+                # Create complex rotation animation on source that would cause issues without proper handling
+                cmds.setKeyframe(source, attribute='rotateX', time=1, value=0)
+                cmds.setKeyframe(source, attribute='rotateX', time=25, value=90)
+                cmds.setKeyframe(source, attribute='rotateX', time=50, value=180)
+                cmds.setKeyframe(source, attribute='rotateX', time=75, value=270)
+                cmds.setKeyframe(source, attribute='rotateX', time=100, value=360)
+
+                cmds.setKeyframe(source, attribute='rotateY', time=1, value=0)
+                cmds.setKeyframe(source, attribute='rotateY', time=50, value=180)
+                cmds.setKeyframe(source, attribute='rotateY', time=100, value=360)
+
+                cmds.setKeyframe(source, attribute='rotateZ', time=1, value=0)
+                cmds.setKeyframe(source, attribute='rotateZ', time=33, value=120)
+                cmds.setKeyframe(source, attribute='rotateZ', time=66, value=240)
+                cmds.setKeyframe(source, attribute='rotateZ', time=100, value=360)
+
+                # PRODUCTION SCENARIO: Create multiple additive layers with animation
+                # Layer 1: Base offset layer with static rotation offset
+                layer1 = self.create_layer(f'RotAccum_Base1_{mode_name}', override=False, add_objects=target)
+                cmds.setAttr(f"{layer1}.rotationAccumulationMode", mode_idx)
+
+                # Add a static rotation offset on layer 1
+                cmds.select(target, replace=True)
+                cmds.animLayer(layer1, edit=True, selected=True)
+                cmds.setKeyframe(target, attribute='rotateX', time=1, value=15, animLayer=layer1)
+                cmds.setKeyframe(target, attribute='rotateY', time=1, value=30, animLayer=layer1)
+                cmds.setKeyframe(target, attribute='rotateZ', time=1, value=-20, animLayer=layer1)
+                cmds.select(clear=True)
+
+                # Layer 2: Animated offset layer with weight animation
+                layer2 = self.create_layer(f'RotAccum_Anim2_{mode_name}', override=False, add_objects=target)
+                cmds.setAttr(f"{layer2}.rotationAccumulationMode", mode_idx)
+
+                # Add animated rotation on layer 2 (bobbing motion)
+                cmds.select(target, replace=True)
+                cmds.animLayer(layer2, edit=True, selected=True)
+                cmds.setKeyframe(target, attribute='rotateX', time=1, value=0, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateX', time=50, value=20, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateX', time=100, value=0, animLayer=layer2)
+
+                cmds.setKeyframe(target, attribute='rotateZ', time=1, value=0, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateZ', time=50, value=-15, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateZ', time=100, value=0, animLayer=layer2)
+                cmds.select(clear=True)
+
+                # Add animated weight to layer2 to test weighted layer composition
+                cmds.setKeyframe(layer2, attribute='weight', time=1, value=0.0)
+                cmds.setKeyframe(layer2, attribute='weight', time=50, value=1.0)
+                cmds.setKeyframe(layer2, attribute='weight', time=100, value=0.5)
+
+                # Layer 3: TARGET layer - where we'll bake the source animation
+                # This layer must account for layer1 and layer2 when calculating deltas
+                target_layer = self.create_layer(f'RotAccum_Target_{mode_name}', override=False, add_objects=target)
+                cmds.setAttr(f"{target_layer}.rotationAccumulationMode", mode_idx)
+
+                print(f"  Testing '{mode_name}' mode with 3-layer stack (2 animated + 1 target)")
+                print(f"    Layer1: Static offset (rotX=15, rotY=30, rotZ=-20)")
+                print(f"    Layer2: Animated bobbing + animated weight (0.0->1.0->0.5)")
+                print(f"    Layer3: Target layer for baking source animation")
+
+                # Bake with euler_filter enabled (this is the key test)
+                # The delta calculation MUST account for layer1 and layer2's contributions
+                qkh.bakeTransformToLayer(source, target, 1, 100,
+                                        layer=target_layer, sample_by=1, euler_filter=True)
+
+                # Validate - target should now match source exactly despite the other layers
+                # Use WORLD SPACE comparison - this is the ground truth!
+                times = [1, 25, 50, 75, 100]
+
+                # Get world space transform values for proper validation
+                source_world = self.get_world_transform_values(source, times)
+                target_world = self.get_world_transform_values(target, times)
+
+                attrs = ['translateX', 'translateY', 'translateZ',
+                        'rotateX', 'rotateY', 'rotateZ']
+
+                # Check with relaxed tolerance for rotation accumulation modes
+                errors = []
+                for attr in attrs:
+                    is_rot = attr.startswith('rotate')
+                    for i, time in enumerate(times):
+                        sv = source_world[attr][i]
+                        tv = target_world[attr][i]
+
+                        if is_rot:
+                            sv = self.normalize_rotation(sv)
+                            tv = self.normalize_rotation(tv)
+
+                        diff = abs(sv - tv)
+                        # Use 1.0 degree tolerance for rotation tests
+                        if diff > 1.0:
+                            errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
+
+                if errors:
+                    all_passed = False
+                    errors_list.append(f"Rotation accumulation mode '{mode_name}' (multi-layer) failed:\n" + "\n".join(errors[:5]))
+                else:
+                    print(f"    ✓ '{mode_name}' mode passed with multi-layer stack")
+
+            except Exception as e:
+                all_passed = False
+                errors_list.append(f"Rotation accumulation mode '{mode_name}' (multi-layer) exception: {str(e)}")
+
+        if all_passed:
+            self.log_test(self.current_test, True, "Both rotation accumulation modes accurate with multiple animated layers")
         else:
             self.log_test(self.current_test, False, "\n".join(errors_list))
 
@@ -643,15 +843,23 @@ class QuickKeysTestSuite:
                                     layer=layer, sample_by=1)
 
             # Validate only the Y rotation (the one we're actually animating)
+            # Use WORLD SPACE comparison for ground truth
             times = [1, 50, 100]
             rotate_attrs = ['rotateY']
 
+            # Get world space rotation values
+            source_world = self.get_world_transform_values(source, times)
+            target_world = self.get_world_transform_values(target, times)
+
             errors = []
             for attr in rotate_attrs:
-                source_vals = self.compare_curves(source, attr, times)
-                target_vals = self.compare_curves(target, attr, times)
+                source_vals = source_world[attr]
+                target_vals = target_world[attr]
 
-                for i, (time, sv, tv) in enumerate(zip(times, source_vals, target_vals)):
+                for i, time in enumerate(times):
+                    sv = source_vals[i]
+                    tv = target_vals[i]
+
                     sv = self.normalize_rotation(sv)
                     tv = self.normalize_rotation(tv)
 
@@ -1192,6 +1400,7 @@ class QuickKeysTestSuite:
         print("\n--- LAYER FEATURE TESTS ---")
         self.test_scale_multiply_mode(qkh)
         self.test_different_rotation_orders(qkh)
+        self.test_rotation_accumulation_modes(qkh)
         self.test_weighted_layer(qkh)
         self.test_muted_layer(qkh)
 
