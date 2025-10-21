@@ -789,15 +789,26 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
         if euler_filter:
             prev_rotation = (rx, ry, rz)
 
-        # Scale
-        # Note: m_transform was created from a world matrix, so use kTransform not kWorld
-        # kWorld space query on a world matrix returns incorrect values (0,0,0)
-        scale = m_transform.scale(om2.MSpace.kTransform)
+        # Scale - extract manually from matrix basis vectors
+        # MTransformationMatrix.scale() returns 0,0,0 when object has animation layers
+        # but scale isn't animated. Extract scale from matrix columns instead.
+        import math
+
+        # Get matrix elements (row-major in Maya API)
+        # Scale is the length of the basis vectors (first 3 columns)
+        sx = math.sqrt(m_matrix[0] * m_matrix[0] + m_matrix[1] * m_matrix[1] + m_matrix[2] * m_matrix[2])
+        sy = math.sqrt(m_matrix[4] * m_matrix[4] + m_matrix[5] * m_matrix[5] + m_matrix[6] * m_matrix[6])
+        sz = math.sqrt(m_matrix[8] * m_matrix[8] + m_matrix[9] * m_matrix[9] + m_matrix[10] * m_matrix[10])
+
         if time == times[0]:  # Debug first frame
-            print(f"DEBUG scale extraction: kTransform returned ({scale[0]:.6f}, {scale[1]:.6f}, {scale[2]:.6f})")
-        results['scaleX'].append(scale[0])
-        results['scaleY'].append(scale[1])
-        results['scaleZ'].append(scale[2])
+            print(f"DEBUG scale from matrix basis vectors: ({sx:.6f}, {sy:.6f}, {sz:.6f})")
+            # Also try MTransformationMatrix for comparison
+            scale_api = m_transform.scale(om2.MSpace.kTransform)
+            print(f"DEBUG scale from MTransformationMatrix: ({scale_api[0]:.6f}, {scale_api[1]:.6f}, {scale_api[2]:.6f})")
+
+        results['scaleX'].append(sx)
+        results['scaleY'].append(sy)
+        results['scaleZ'].append(sz)
 
         if euler_filter:
             results['rotateX'], results['rotateY'], results['rotateZ'] = eulerFilter(
