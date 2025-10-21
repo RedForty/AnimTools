@@ -793,6 +793,8 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
         # Note: m_transform was created from a world matrix, so use kTransform not kWorld
         # kWorld space query on a world matrix returns incorrect values (0,0,0)
         scale = m_transform.scale(om2.MSpace.kTransform)
+        if time == times[0]:  # Debug first frame
+            print(f"DEBUG scale extraction: kTransform returned ({scale[0]:.6f}, {scale[1]:.6f}, {scale[2]:.6f})")
         results['scaleX'].append(scale[0])
         results['scaleY'].append(scale[1])
         results['scaleZ'].append(scale[2])
