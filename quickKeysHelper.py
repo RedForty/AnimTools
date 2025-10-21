@@ -484,21 +484,27 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
         delta_ry_list = []
         delta_rz_list = []
 
-        # DO NOT unwrap before quaternion conversion - use raw values from Maya
-        # Calculate deltas using quaternion math
+        # IMPORTANT: evaluateCurvesDirectlyFallback returns rotation values in RADIANS
+        # but our quaternion functions expect DEGREES. Must convert!
         for i in range(len(times)):
             world_rx = world_values['rotateX'][i]
             world_ry = world_values['rotateY'][i]
             world_rz = world_values['rotateZ'][i]
 
-            composite_rx = composite_values['rotateX'][i]
-            composite_ry = composite_values['rotateY'][i]
-            composite_rz = composite_values['rotateZ'][i]
+            # Convert composite rotations from radians to degrees
+            composite_rx_rad = composite_values['rotateX'][i]
+            composite_ry_rad = composite_values['rotateY'][i]
+            composite_rz_rad = composite_values['rotateZ'][i]
+
+            composite_rx = om2.MAngle(composite_rx_rad, om2.MAngle.kRadians).asDegrees()
+            composite_ry = om2.MAngle(composite_ry_rad, om2.MAngle.kRadians).asDegrees()
+            composite_rz = om2.MAngle(composite_rz_rad, om2.MAngle.kRadians).asDegrees()
 
             if i == 0:  # Debug first frame
                 print(f"\nFrame {times[i]}:")
-                print(f"  World rotation: ({world_rx:.2f}, {world_ry:.2f}, {world_rz:.2f})")
-                print(f"  Composite rotation: ({composite_rx:.2f}, {composite_ry:.2f}, {composite_rz:.2f})")
+                print(f"  World rotation (deg): ({world_rx:.2f}, {world_ry:.2f}, {world_rz:.2f})")
+                print(f"  Composite rotation (rad): ({composite_rx_rad:.4f}, {composite_ry_rad:.4f}, {composite_rz_rad:.4f})")
+                print(f"  Composite rotation (deg): ({composite_rx:.2f}, {composite_ry:.2f}, {composite_rz:.2f})")
 
             delta_rx, delta_ry, delta_rz = calculateRotationDeltaQuaternion(
                 world_rx, world_ry, world_rz,
@@ -507,7 +513,7 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             )
 
             if i == 0:  # Debug first frame
-                print(f"  Delta rotation: ({delta_rx:.2f}, {delta_ry:.2f}, {delta_rz:.2f})")
+                print(f"  Delta rotation (deg): ({delta_rx:.2f}, {delta_ry:.2f}, {delta_rz:.2f})")
 
             # Unwrap deltas to be continuous
             if delta_rx_list:
