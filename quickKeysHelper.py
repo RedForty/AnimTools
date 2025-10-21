@@ -605,9 +605,9 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
         results['scaleY'].append(scale[1])
         results['scaleZ'].append(scale[2])
 
-
-        # results['rotateX'], results['rotateY'], results['rotateZ'] = eulerFilter(
-        #     results['rotateX'], results['rotateY'], results['rotateZ'])
+        if euler_filter:
+            results['rotateX'], results['rotateY'], results['rotateZ'] = eulerFilter(
+                results['rotateX'], results['rotateY'], results['rotateZ'])
 
     return results
 
@@ -1257,9 +1257,9 @@ def cprofile_function(func):
 # ============================================================================
 @cprofile_function
 def run():
-    cloneTransform('source1', 'target', start_frame=1, end_frame=1000, layer="AnimLayer2")
+    cloneTransform('source1', 'target', start_frame=1, end_frame=1000, layer="AnimLayer2", euler_filter=True)
+    # cloneTransform(start_frame=1, end_frame=1000, euler_filter=False)
 
 if __name__ == "__main__":
     run()
-
 
