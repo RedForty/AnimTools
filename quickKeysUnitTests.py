@@ -157,6 +157,8 @@ class QuickKeysTestSuite:
         to ensure both objects end up in the same position/rotation, regardless of how
         the animation is stored in layers.
 
+        For rotations, we compare world matrices to avoid Euler angle gimbal lock issues.
+
         Args:
             source (str): Source node name
             target (str): Target node name
@@ -168,6 +170,8 @@ class QuickKeysTestSuite:
         Returns:
             list: Error messages if validation fails, empty list if passed
         """
+        import maya.api.OpenMaya as om2
+
         if attrs is None:
             attrs = ['translateX', 'translateY', 'translateZ',
                     'rotateX', 'rotateY', 'rotateZ',
@@ -178,25 +182,64 @@ class QuickKeysTestSuite:
         target_world = self.get_world_transform_values(target, times)
 
         errors = []
-        for attr in attrs:
-            source_vals = source_world[attr]
-            target_vals = target_world[attr]
 
-            # Determine if this is a rotation attribute
-            is_rot = attr.startswith('rotate')
+        # For each time, compare transforms
+        for time_idx, time in enumerate(times):
+            # Compare translation and scale directly
+            for attr in attrs:
+                if not attr.startswith('rotate'):
+                    sv = source_world[attr][time_idx]
+                    tv = target_world[attr][time_idx]
+                    diff = abs(sv - tv)
+                    if diff > tolerance:
+                        errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
 
-            for i, time in enumerate(times):
-                sv = source_vals[i]
-                tv = target_vals[i]
+            # For rotation, compare matrices to avoid Euler angle gimbal lock ambiguity
+            if any(attr.startswith('rotate') for attr in attrs):
+                # Get rotation order
+                rot_order_idx = cmds.getAttr(f"{source}.rotateOrder")
+                rotation_orders = ['xyz', 'yzx', 'zxy', 'xzy', 'yxz', 'zyx']
+                rot_order_map = {
+                    'xyz': om2.MEulerRotation.kXYZ,
+                    'yzx': om2.MEulerRotation.kYZX,
+                    'zxy': om2.MEulerRotation.kZXY,
+                    'xzy': om2.MEulerRotation.kXZY,
+                    'yxz': om2.MEulerRotation.kYXZ,
+                    'zyx': om2.MEulerRotation.kZYX
+                }
+                rot_order = rot_order_map[rotation_orders[rot_order_idx]]
 
-                if is_rot:
-                    # Normalize rotations for comparison
-                    sv = self.normalize_rotation(sv)
-                    tv = self.normalize_rotation(tv)
+                # Convert Euler angles to rotation matrices
+                src_rx = om2.MAngle(source_world['rotateX'][time_idx], om2.MAngle.kDegrees).asRadians()
+                src_ry = om2.MAngle(source_world['rotateY'][time_idx], om2.MAngle.kDegrees).asRadians()
+                src_rz = om2.MAngle(source_world['rotateZ'][time_idx], om2.MAngle.kDegrees).asRadians()
+                src_euler = om2.MEulerRotation(src_rx, src_ry, src_rz, rot_order)
+                src_quat = src_euler.asQuaternion()
 
-                diff = abs(sv - tv)
-                if diff > tolerance:
-                    errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
+                tgt_rx = om2.MAngle(target_world['rotateX'][time_idx], om2.MAngle.kDegrees).asRadians()
+                tgt_ry = om2.MAngle(target_world['rotateY'][time_idx], om2.MAngle.kDegrees).asRadians()
+                tgt_rz = om2.MAngle(target_world['rotateZ'][time_idx], om2.MAngle.kDegrees).asRadians()
+                tgt_euler = om2.MEulerRotation(tgt_rx, tgt_ry, tgt_rz, rot_order)
+                tgt_quat = tgt_euler.asQuaternion()
+
+                # Compare quaternions (handles gimbal lock / Euler ambiguity)
+                # Quaternions q and -q represent the same rotation
+                quat_diff = min(
+                    abs(src_quat.w - tgt_quat.w) + abs(src_quat.x - tgt_quat.x) +
+                    abs(src_quat.y - tgt_quat.y) + abs(src_quat.z - tgt_quat.z),
+                    abs(src_quat.w + tgt_quat.w) + abs(src_quat.x + tgt_quat.x) +
+                    abs(src_quat.y + tgt_quat.y) + abs(src_quat.z + tgt_quat.z)
+                )
+
+                # Use relaxed tolerance for quaternion comparison (0.01 ~= 0.5 degrees)
+                if quat_diff > 0.01:
+                    errors.append(f"  rotation @ frame {time}: quaternion difference={quat_diff:.6f} "
+                                f"(Euler: src=({source_world['rotateX'][time_idx]:.2f}, "
+                                f"{source_world['rotateY'][time_idx]:.2f}, "
+                                f"{source_world['rotateZ'][time_idx]:.2f}), "
+                                f"tgt=({target_world['rotateX'][time_idx]:.2f}, "
+                                f"{target_world['rotateY'][time_idx]:.2f}, "
+                                f"{target_world['rotateZ'][time_idx]:.2f}))")
 
         return errors
 
@@ -561,32 +604,9 @@ class QuickKeysTestSuite:
                                         layer=target_layer, sample_by=1, euler_filter=True)
 
                 # Validate - target should now match source exactly despite the other layers
-                # Use WORLD SPACE comparison - this is the ground truth!
+                # Use validate_bake() which has proper quaternion-based rotation comparison
                 times = [1, 25, 50, 75, 100]
-
-                # Get world space transform values for proper validation
-                source_world = self.get_world_transform_values(source, times)
-                target_world = self.get_world_transform_values(target, times)
-
-                attrs = ['translateX', 'translateY', 'translateZ',
-                        'rotateX', 'rotateY', 'rotateZ']
-
-                # Check with relaxed tolerance for rotation accumulation modes
-                errors = []
-                for attr in attrs:
-                    is_rot = attr.startswith('rotate')
-                    for i, time in enumerate(times):
-                        sv = source_world[attr][i]
-                        tv = target_world[attr][i]
-
-                        if is_rot:
-                            sv = self.normalize_rotation(sv)
-                            tv = self.normalize_rotation(tv)
-
-                        diff = abs(sv - tv)
-                        # Use 1.0 degree tolerance for rotation tests
-                        if diff > 1.0:
-                            errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
+                errors = self.validate_bake(source, target, times)
 
                 if errors:
                     all_passed = False
