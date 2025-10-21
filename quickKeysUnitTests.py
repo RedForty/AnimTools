@@ -24,7 +24,8 @@ class QuickKeysTestSuite:
         print("  - Additive, override, and stacked layers")
         print("  - Muted and weighted layers")
         print("  - All rotation orders and scale modes")
-        print("  - Rotation accumulation modes (component vs layer)")
+        print("  - Rotation accumulation modes (component vs layer) with multi-layer stacks")
+        print("  - Multi-layer scenarios with animated weights")
         print("  - Parent, point, and orient constraints")
         print("  - Complex multi-layer scenarios")
         print("  - Parent-child hierarchies")
@@ -405,8 +406,15 @@ class QuickKeysTestSuite:
             self.log_test(self.current_test, False, "\n".join(errors_list))
 
     def test_rotation_accumulation_modes(self, qkh):
-        """Test rotation accumulation modes (component vs layer) with euler_filter."""
-        self.current_test = "Rotation Accumulation Modes"
+        """Test rotation accumulation modes (component vs layer) with multiple animated layers.
+
+        This test mimics real-world production scenarios where:
+        - Target is a member of multiple additive layers (not just one)
+        - Other layers have animation on them
+        - Layer weights can be animated
+        - The tool must correctly account for all layers when calculating deltas
+        """
+        self.current_test = "Rotation Accumulation Modes (Multi-Layer)"
         print(f"\n--- Test: {self.current_test} ---")
 
         all_passed = True
@@ -417,7 +425,7 @@ class QuickKeysTestSuite:
             source, target = self.create_test_objects(f"test_rotaccum_{mode_name}")
 
             try:
-                # Create complex rotation animation that would cause issues without proper handling
+                # Create complex rotation animation on source that would cause issues without proper handling
                 cmds.setKeyframe(source, attribute='rotateX', time=1, value=0)
                 cmds.setKeyframe(source, attribute='rotateX', time=25, value=90)
                 cmds.setKeyframe(source, attribute='rotateX', time=50, value=180)
@@ -433,15 +441,56 @@ class QuickKeysTestSuite:
                 cmds.setKeyframe(source, attribute='rotateZ', time=66, value=240)
                 cmds.setKeyframe(source, attribute='rotateZ', time=100, value=360)
 
-                # Create additive layer and set rotation accumulation mode
-                layer = self.create_layer(f'RotAccum_{mode_name}', override=False, add_objects=target)
-                cmds.setAttr(f"{layer}.rotationAccumulationMode", mode_idx)
+                # PRODUCTION SCENARIO: Create multiple additive layers with animation
+                # Layer 1: Base offset layer with static rotation offset
+                layer1 = self.create_layer(f'RotAccum_Base1_{mode_name}', override=False, add_objects=target)
+                cmds.setAttr(f"{layer1}.rotationAccumulationMode", mode_idx)
+
+                # Add a static rotation offset on layer 1
+                cmds.select(target, replace=True)
+                cmds.animLayer(layer1, edit=True, selected=True)
+                cmds.setKeyframe(target, attribute='rotateX', time=1, value=15, animLayer=layer1)
+                cmds.setKeyframe(target, attribute='rotateY', time=1, value=30, animLayer=layer1)
+                cmds.setKeyframe(target, attribute='rotateZ', time=1, value=-20, animLayer=layer1)
+                cmds.select(clear=True)
+
+                # Layer 2: Animated offset layer with weight animation
+                layer2 = self.create_layer(f'RotAccum_Anim2_{mode_name}', override=False, add_objects=target)
+                cmds.setAttr(f"{layer2}.rotationAccumulationMode", mode_idx)
+
+                # Add animated rotation on layer 2 (bobbing motion)
+                cmds.select(target, replace=True)
+                cmds.animLayer(layer2, edit=True, selected=True)
+                cmds.setKeyframe(target, attribute='rotateX', time=1, value=0, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateX', time=50, value=20, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateX', time=100, value=0, animLayer=layer2)
+
+                cmds.setKeyframe(target, attribute='rotateZ', time=1, value=0, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateZ', time=50, value=-15, animLayer=layer2)
+                cmds.setKeyframe(target, attribute='rotateZ', time=100, value=0, animLayer=layer2)
+                cmds.select(clear=True)
+
+                # Add animated weight to layer2 to test weighted layer composition
+                cmds.setKeyframe(layer2, attribute='weight', time=1, value=0.0)
+                cmds.setKeyframe(layer2, attribute='weight', time=50, value=1.0)
+                cmds.setKeyframe(layer2, attribute='weight', time=100, value=0.5)
+
+                # Layer 3: TARGET layer - where we'll bake the source animation
+                # This layer must account for layer1 and layer2 when calculating deltas
+                target_layer = self.create_layer(f'RotAccum_Target_{mode_name}', override=False, add_objects=target)
+                cmds.setAttr(f"{target_layer}.rotationAccumulationMode", mode_idx)
+
+                print(f"  Testing '{mode_name}' mode with 3-layer stack (2 animated + 1 target)")
+                print(f"    Layer1: Static offset (rotX=15, rotY=30, rotZ=-20)")
+                print(f"    Layer2: Animated bobbing + animated weight (0.0->1.0->0.5)")
+                print(f"    Layer3: Target layer for baking source animation")
 
                 # Bake with euler_filter enabled (this is the key test)
+                # The delta calculation MUST account for layer1 and layer2's contributions
                 qkh.bakeTransformToLayer(source, target, 1, 100,
-                                        layer=layer, sample_by=1, euler_filter=True)
+                                        layer=target_layer, sample_by=1, euler_filter=True)
 
-                # Validate
+                # Validate - target should now match source exactly despite the other layers
                 times = [1, 25, 50, 75, 100]
                 source_vals_all = {}
                 target_vals_all = {}
@@ -472,14 +521,16 @@ class QuickKeysTestSuite:
 
                 if errors:
                     all_passed = False
-                    errors_list.append(f"Rotation accumulation mode '{mode_name}' failed:\n" + "\n".join(errors[:3]))
+                    errors_list.append(f"Rotation accumulation mode '{mode_name}' (multi-layer) failed:\n" + "\n".join(errors[:5]))
+                else:
+                    print(f"    ✓ '{mode_name}' mode passed with multi-layer stack")
 
             except Exception as e:
                 all_passed = False
-                errors_list.append(f"Rotation accumulation mode '{mode_name}' exception: {str(e)}")
+                errors_list.append(f"Rotation accumulation mode '{mode_name}' (multi-layer) exception: {str(e)}")
 
         if all_passed:
-            self.log_test(self.current_test, True, "Both rotation accumulation modes accurate")
+            self.log_test(self.current_test, True, "Both rotation accumulation modes accurate with multiple animated layers")
         else:
             self.log_test(self.current_test, False, "\n".join(errors_list))
 
