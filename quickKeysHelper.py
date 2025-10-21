@@ -390,10 +390,17 @@ def evaluateCurvesDirectlyFallback(cache, times):
                 if plug:
                     try:
                         val = plug.asDouble(ctx)
+                        # Workaround: If scale is exactly 0.0 when querying composite values,
+                        # it's likely a Maya bug with animation layers. Default to 1.0 (identity).
+                        # Note: Legitimate near-zero scale (0.001, etc) will be preserved.
+                        if attr.startswith('scale') and val == 0.0:
+                            val = 1.0
                     except:
-                        val = 0.0
+                        # Default value depends on attribute type
+                        # Scale defaults to 1.0 (identity), others to 0.0
+                        val = 1.0 if attr.startswith('scale') else 0.0
                 else:
-                    val = 0.0
+                    val = 1.0 if attr.startswith('scale') else 0.0
                 results[attr].append(val)
 
         return results
