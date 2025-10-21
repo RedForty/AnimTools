@@ -475,18 +475,16 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
 
     # Process rotation attributes together if using quaternion mode
     if use_quat_rotation:
+        print(f"\n=== QUATERNION ROTATION MODE DEBUG ===")
+        print(f"Target layer: {cache.target_layer}")
+        print(f"Rotation order: {cache.rotation_order}")
+
         # Calculate quaternion-based rotation deltas
         delta_rx_list = []
         delta_ry_list = []
         delta_rz_list = []
 
-        # Unwrap composite rotations to match world rotations first
-        for rot_attr in ['rotateX', 'rotateY', 'rotateZ']:
-            composite_vals = composite_values[rot_attr][:]
-            for i in range(1, len(composite_vals)):
-                composite_vals[i] = unwrapAngle(composite_vals[i], composite_vals[i-1])
-            composite_values[rot_attr] = composite_vals
-
+        # DO NOT unwrap before quaternion conversion - use raw values from Maya
         # Calculate deltas using quaternion math
         for i in range(len(times)):
             world_rx = world_values['rotateX'][i]
@@ -497,11 +495,19 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             composite_ry = composite_values['rotateY'][i]
             composite_rz = composite_values['rotateZ'][i]
 
+            if i == 0:  # Debug first frame
+                print(f"\nFrame {times[i]}:")
+                print(f"  World rotation: ({world_rx:.2f}, {world_ry:.2f}, {world_rz:.2f})")
+                print(f"  Composite rotation: ({composite_rx:.2f}, {composite_ry:.2f}, {composite_rz:.2f})")
+
             delta_rx, delta_ry, delta_rz = calculateRotationDeltaQuaternion(
                 world_rx, world_ry, world_rz,
                 composite_rx, composite_ry, composite_rz,
                 cache.rotation_order
             )
+
+            if i == 0:  # Debug first frame
+                print(f"  Delta rotation: ({delta_rx:.2f}, {delta_ry:.2f}, {delta_rz:.2f})")
 
             # Unwrap deltas to be continuous
             if delta_rx_list:
@@ -516,6 +522,7 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
         delta_values['rotateX'] = delta_rx_list
         delta_values['rotateY'] = delta_ry_list
         delta_values['rotateZ'] = delta_rz_list
+        print("=== END QUATERNION DEBUG ===\n")
 
     # Process non-rotation attributes (or rotations if using component mode)
     for attr in cache.attrs:
