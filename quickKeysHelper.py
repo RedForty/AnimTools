@@ -440,14 +440,28 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
     if cache.layer_is_override[cache.target_layer] or cache.target_layer == 'BaseAnimation':
         return world_values
 
+    # Check if any layers being composited use "layer" rotation accumulation mode
+    # If so, we MUST use Maya's evaluation to get proper quaternion-based composition
+    any_layer_uses_quat_rotation = False
+    rotation_attrs = {'rotateX', 'rotateY', 'rotateZ'}
+    if rotation_attrs.issubset(set(cache.attrs)):
+        for layer in cache.layers_to_composite:
+            if cache.layer_rotation_mode[layer] == 'layer':
+                any_layer_uses_quat_rotation = True
+                break
+
     # Get composite values from layers below target
-    if use_direct_eval:
+    # IMPORTANT: If any layer uses quaternion rotation mode, we must use Maya's evaluation
+    # because direct curve reading won't respect the quaternion composition
+    if use_direct_eval and not any_layer_uses_quat_rotation:
         try:
             composite_values = evaluateCurvesDirectly(cache, times)
         except Exception as e:
             print(f"Direct curve evaluation failed: {e}, falling back to plug evaluation")
             composite_values = evaluateCurvesDirectlyFallback(cache, times)
     else:
+        if any_layer_uses_quat_rotation:
+            print(f"Using Maya evaluation for composite because layers use quaternion rotation mode")
         composite_values = evaluateCurvesDirectlyFallback(cache, times)
 
     # Calculate deltas with rotation unwrapping

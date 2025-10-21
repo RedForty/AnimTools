@@ -121,8 +121,10 @@ class QuickKeysTestSuite:
             values['rotateY'].append(rotation[1])
             values['rotateZ'].append(rotation[2])
 
-            # Get world space scale
-            scale = cmds.xform(node, query=True, worldSpace=True, scale=True)
+            # Get scale - use objectSpace (relative) for scale queries
+            # Note: worldSpace scale queries can return incorrect values with animation layers
+            # For objects without parents, objectSpace scale equals local scale
+            scale = cmds.xform(node, query=True, objectSpace=True, scale=True)
             values['scaleX'].append(scale[0])
             values['scaleY'].append(scale[1])
             values['scaleZ'].append(scale[2])
