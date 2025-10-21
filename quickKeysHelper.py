@@ -24,6 +24,11 @@ class LayerStackCache:
         self.attrs = attrs
         self.target_layer = target_layer
 
+        # Cache node's rotation order
+        rot_order_idx = cmds.getAttr(f"{node}.rotateOrder")
+        rotation_orders = ['xyz', 'yzx', 'zxy', 'xzy', 'yxz', 'zyx']
+        self.rotation_order = rotation_orders[rot_order_idx]
+
         # Build layer hierarchy
         self.all_layers = self._getAnimationLayers()
         self.target_idx = self.all_layers.index(target_layer) if target_layer in self.all_layers else len(self.all_layers)
@@ -35,15 +40,19 @@ class LayerStackCache:
         # Cache layer properties for ALL layers (including target for its mode)
         self.layer_is_override = {}
         self.layer_scale_mode = {}
+        self.layer_rotation_mode = {}
 
         for layer in self.all_layers:
             if layer == 'BaseAnimation':
                 self.layer_is_override[layer] = True
                 self.layer_scale_mode[layer] = 'additive'
+                self.layer_rotation_mode[layer] = 'component'
             else:
                 self.layer_is_override[layer] = cmds.getAttr(f"{layer}.override") == 1
                 mode = cmds.getAttr(f"{layer}.scaleAccumulationMode")
                 self.layer_scale_mode[layer] = 'multiply' if mode == 1 else 'additive'
+                rot_mode = cmds.getAttr(f"{layer}.rotationAccumulationMode")
+                self.layer_rotation_mode[layer] = 'layer' if rot_mode == 1 else 'component'
 
         # Cache animation curves for each attr on each layer (EXCEPT target)
         self.curves_cache = self._buildCurvesCache()
@@ -443,9 +452,63 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
 
     # Calculate deltas with rotation unwrapping
     scale_attrs = {'scaleX', 'scaleY', 'scaleZ'}
+    rotation_attrs = {'rotateX', 'rotateY', 'rotateZ'}
     delta_values = {}
 
+    # Check if we need to use quaternion math for rotations
+    rotation_mode = cache.layer_rotation_mode[cache.target_layer]
+    use_quat_rotation = rotation_mode == 'layer' and rotation_attrs.issubset(set(cache.attrs))
+
+    # Process rotation attributes together if using quaternion mode
+    if use_quat_rotation:
+        # Calculate quaternion-based rotation deltas
+        delta_rx_list = []
+        delta_ry_list = []
+        delta_rz_list = []
+
+        # Unwrap composite rotations to match world rotations first
+        for rot_attr in ['rotateX', 'rotateY', 'rotateZ']:
+            composite_vals = composite_values[rot_attr][:]
+            for i in range(1, len(composite_vals)):
+                composite_vals[i] = unwrapAngle(composite_vals[i], composite_vals[i-1])
+            composite_values[rot_attr] = composite_vals
+
+        # Calculate deltas using quaternion math
+        for i in range(len(times)):
+            world_rx = world_values['rotateX'][i]
+            world_ry = world_values['rotateY'][i]
+            world_rz = world_values['rotateZ'][i]
+
+            composite_rx = composite_values['rotateX'][i]
+            composite_ry = composite_values['rotateY'][i]
+            composite_rz = composite_values['rotateZ'][i]
+
+            delta_rx, delta_ry, delta_rz = calculateRotationDeltaQuaternion(
+                world_rx, world_ry, world_rz,
+                composite_rx, composite_ry, composite_rz,
+                cache.rotation_order
+            )
+
+            # Unwrap deltas to be continuous
+            if delta_rx_list:
+                delta_rx = unwrapAngle(delta_rx, delta_rx_list[-1])
+                delta_ry = unwrapAngle(delta_ry, delta_ry_list[-1])
+                delta_rz = unwrapAngle(delta_rz, delta_rz_list[-1])
+
+            delta_rx_list.append(delta_rx)
+            delta_ry_list.append(delta_ry)
+            delta_rz_list.append(delta_rz)
+
+        delta_values['rotateX'] = delta_rx_list
+        delta_values['rotateY'] = delta_ry_list
+        delta_values['rotateZ'] = delta_rz_list
+
+    # Process non-rotation attributes (or rotations if using component mode)
     for attr in cache.attrs:
+        # Skip rotation attrs if we already processed them with quaternion math
+        if use_quat_rotation and attr in rotation_attrs:
+            continue
+
         is_scale = attr in scale_attrs
         scale_mode = cache.layer_scale_mode[cache.target_layer]
 
@@ -467,7 +530,6 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
                 delta = world_val - composite
                 if attr.startswith('rotate') and deltas:
                     delta = unwrapAngle(delta, deltas[-1])
-
 
             deltas.append(delta)
 
@@ -530,6 +592,99 @@ def getWorldMatricesFast(node, times):
         matrices[time] = [matrix.getElement(r, c) for r in range(4) for c in range(4)]
 
     return matrices
+
+
+def eulerToQuaternion(rx, ry, rz, rotation_order='xyz'):
+    """
+    Convert euler angles to quaternion using Maya API.
+
+    Args:
+        rx, ry, rz (float): Rotation angles in degrees
+        rotation_order (str): Rotation order
+
+    Returns:
+        om2.MQuaternion: Quaternion
+    """
+    rotation_order_map = {
+        'xyz': om2.MEulerRotation.kXYZ,
+        'yzx': om2.MEulerRotation.kYZX,
+        'zxy': om2.MEulerRotation.kZXY,
+        'xzy': om2.MEulerRotation.kXZY,
+        'yxz': om2.MEulerRotation.kYXZ,
+        'zyx': om2.MEulerRotation.kZYX
+    }
+    rot_order = rotation_order_map.get(rotation_order.lower(), om2.MEulerRotation.kXYZ)
+
+    # Convert degrees to radians
+    rx_rad = om2.MAngle(rx, om2.MAngle.kDegrees).asRadians()
+    ry_rad = om2.MAngle(ry, om2.MAngle.kDegrees).asRadians()
+    rz_rad = om2.MAngle(rz, om2.MAngle.kDegrees).asRadians()
+
+    euler = om2.MEulerRotation(rx_rad, ry_rad, rz_rad, rot_order)
+    return euler.asQuaternion()
+
+
+def quaternionToEuler(quat, rotation_order='xyz'):
+    """
+    Convert quaternion to euler angles using Maya API.
+
+    Args:
+        quat (om2.MQuaternion): Quaternion
+        rotation_order (str): Rotation order
+
+    Returns:
+        tuple: (rx, ry, rz) in degrees
+    """
+    rotation_order_map = {
+        'xyz': om2.MEulerRotation.kXYZ,
+        'yzx': om2.MEulerRotation.kYZX,
+        'zxy': om2.MEulerRotation.kZXY,
+        'xzy': om2.MEulerRotation.kXZY,
+        'yxz': om2.MEulerRotation.kYXZ,
+        'zyx': om2.MEulerRotation.kZYX
+    }
+    rot_order = rotation_order_map.get(rotation_order.lower(), om2.MEulerRotation.kXYZ)
+
+    euler = quat.asEulerRotation()
+    euler = euler.reorder(rot_order)
+
+    rx = om2.MAngle(euler.x).asDegrees()
+    ry = om2.MAngle(euler.y).asDegrees()
+    rz = om2.MAngle(euler.z).asDegrees()
+
+    return (rx, ry, rz)
+
+
+def calculateRotationDeltaQuaternion(world_rx, world_ry, world_rz,
+                                     composite_rx, composite_ry, composite_rz,
+                                     rotation_order='xyz'):
+    """
+    Calculate rotation delta using quaternion math.
+
+    For additive layers with "layer" rotation accumulation mode:
+        world_quat = composite_quat * delta_quat
+        delta_quat = inverse(composite_quat) * world_quat
+
+    Args:
+        world_rx, world_ry, world_rz (float): Target world rotation in degrees
+        composite_rx, composite_ry, composite_rz (float): Composite rotation from layers below in degrees
+        rotation_order (str): Rotation order
+
+    Returns:
+        tuple: (delta_rx, delta_ry, delta_rz) in degrees
+    """
+    # Convert euler to quaternions
+    world_quat = eulerToQuaternion(world_rx, world_ry, world_rz, rotation_order)
+    composite_quat = eulerToQuaternion(composite_rx, composite_ry, composite_rz, rotation_order)
+
+    # Calculate delta: delta_quat = inverse(composite_quat) * world_quat
+    composite_quat_inv = composite_quat.inverse()
+    delta_quat = composite_quat_inv * world_quat
+
+    # Convert back to euler
+    delta_rx, delta_ry, delta_rz = quaternionToEuler(delta_quat, rotation_order)
+
+    return (delta_rx, delta_ry, delta_rz)
 
 
 def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=False):

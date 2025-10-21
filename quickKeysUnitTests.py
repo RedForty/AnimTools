@@ -24,13 +24,14 @@ class QuickKeysTestSuite:
         print("  - Additive, override, and stacked layers")
         print("  - Muted and weighted layers")
         print("  - All rotation orders and scale modes")
+        print("  - Rotation accumulation modes (component vs layer)")
         print("  - Parent, point, and orient constraints")
         print("  - Complex multi-layer scenarios")
         print("  - Parent-child hierarchies")
         print("  - Batch baking multiple objects")
         print("  - Edge cases (negative frames, zero values, single frame)")
         print("  - Error cases (invalid inputs, locked attributes)")
-        print("\nTotal Tests: 26 (21 positive + 4 negative + 1 edge case)")
+        print("\nTotal Tests: 27 (22 positive + 4 negative + 1 edge case)")
         print("="*80)
 
     def create_test_objects(self, name="test"):
@@ -400,6 +401,85 @@ class QuickKeysTestSuite:
 
         if all_passed:
             self.log_test(self.current_test, True, "All rotation orders accurate")
+        else:
+            self.log_test(self.current_test, False, "\n".join(errors_list))
+
+    def test_rotation_accumulation_modes(self, qkh):
+        """Test rotation accumulation modes (component vs layer) with euler_filter."""
+        self.current_test = "Rotation Accumulation Modes"
+        print(f"\n--- Test: {self.current_test} ---")
+
+        all_passed = True
+        errors_list = []
+
+        # Test both component and layer modes
+        for mode_idx, mode_name in [(0, 'component'), (1, 'layer')]:
+            source, target = self.create_test_objects(f"test_rotaccum_{mode_name}")
+
+            try:
+                # Create complex rotation animation that would cause issues without proper handling
+                cmds.setKeyframe(source, attribute='rotateX', time=1, value=0)
+                cmds.setKeyframe(source, attribute='rotateX', time=25, value=90)
+                cmds.setKeyframe(source, attribute='rotateX', time=50, value=180)
+                cmds.setKeyframe(source, attribute='rotateX', time=75, value=270)
+                cmds.setKeyframe(source, attribute='rotateX', time=100, value=360)
+
+                cmds.setKeyframe(source, attribute='rotateY', time=1, value=0)
+                cmds.setKeyframe(source, attribute='rotateY', time=50, value=180)
+                cmds.setKeyframe(source, attribute='rotateY', time=100, value=360)
+
+                cmds.setKeyframe(source, attribute='rotateZ', time=1, value=0)
+                cmds.setKeyframe(source, attribute='rotateZ', time=33, value=120)
+                cmds.setKeyframe(source, attribute='rotateZ', time=66, value=240)
+                cmds.setKeyframe(source, attribute='rotateZ', time=100, value=360)
+
+                # Create additive layer and set rotation accumulation mode
+                layer = self.create_layer(f'RotAccum_{mode_name}', override=False, add_objects=target)
+                cmds.setAttr(f"{layer}.rotationAccumulationMode", mode_idx)
+
+                # Bake with euler_filter enabled (this is the key test)
+                qkh.bakeTransformToLayer(source, target, 1, 100,
+                                        layer=layer, sample_by=1, euler_filter=True)
+
+                # Validate
+                times = [1, 25, 50, 75, 100]
+                source_vals_all = {}
+                target_vals_all = {}
+
+                attrs = ['translateX', 'translateY', 'translateZ',
+                        'rotateX', 'rotateY', 'rotateZ']
+
+                for attr in attrs:
+                    source_vals_all[attr] = self.compare_curves(source, attr, times)
+                    target_vals_all[attr] = self.compare_curves(target, attr, times)
+
+                # Check with relaxed tolerance for rotation accumulation modes
+                errors = []
+                for attr in attrs:
+                    is_rot = attr.startswith('rotate')
+                    for i, time in enumerate(times):
+                        sv = source_vals_all[attr][i]
+                        tv = target_vals_all[attr][i]
+
+                        if is_rot:
+                            sv = self.normalize_rotation(sv)
+                            tv = self.normalize_rotation(tv)
+
+                        diff = abs(sv - tv)
+                        # Use 1.0 degree tolerance for rotation tests
+                        if diff > 1.0:
+                            errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
+
+                if errors:
+                    all_passed = False
+                    errors_list.append(f"Rotation accumulation mode '{mode_name}' failed:\n" + "\n".join(errors[:3]))
+
+            except Exception as e:
+                all_passed = False
+                errors_list.append(f"Rotation accumulation mode '{mode_name}' exception: {str(e)}")
+
+        if all_passed:
+            self.log_test(self.current_test, True, "Both rotation accumulation modes accurate")
         else:
             self.log_test(self.current_test, False, "\n".join(errors_list))
 
@@ -1192,6 +1272,7 @@ class QuickKeysTestSuite:
         print("\n--- LAYER FEATURE TESTS ---")
         self.test_scale_multiply_mode(qkh)
         self.test_different_rotation_orders(qkh)
+        self.test_rotation_accumulation_modes(qkh)
         self.test_weighted_layer(qkh)
         self.test_muted_layer(qkh)
 
