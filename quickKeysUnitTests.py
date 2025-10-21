@@ -85,8 +85,60 @@ class QuickKeysTestSuite:
             angle += 360
         return angle
 
+    def get_world_transform_values(self, node, times):
+        """Get world space transform values at specific times.
+
+        Returns world space translation, rotation, and scale values.
+        This is the ground truth for validation - do the objects end up in the same place?
+
+        Args:
+            node (str): Node name
+            times (list): Frame numbers to sample
+
+        Returns:
+            dict: {attr: [values]} for translateX/Y/Z, rotateX/Y/Z, scaleX/Y/Z in world space
+        """
+        values = {
+            'translateX': [], 'translateY': [], 'translateZ': [],
+            'rotateX': [], 'rotateY': [], 'rotateZ': [],
+            'scaleX': [], 'scaleY': [], 'scaleZ': []
+        }
+
+        for time in times:
+            # Set time and refresh to ensure proper evaluation
+            cmds.currentTime(time)
+            cmds.refresh()
+
+            # Get world space translation
+            translate = cmds.xform(node, query=True, worldSpace=True, translation=True)
+            values['translateX'].append(translate[0])
+            values['translateY'].append(translate[1])
+            values['translateZ'].append(translate[2])
+
+            # Get world space rotation
+            rotation = cmds.xform(node, query=True, worldSpace=True, rotation=True)
+            values['rotateX'].append(rotation[0])
+            values['rotateY'].append(rotation[1])
+            values['rotateZ'].append(rotation[2])
+
+            # Get world space scale
+            scale = cmds.xform(node, query=True, worldSpace=True, scale=True)
+            values['scaleX'].append(scale[0])
+            values['scaleY'].append(scale[1])
+            values['scaleZ'].append(scale[2])
+
+        return values
+
     def compare_curves(self, node, attr, times, tolerance=0.001):
-        """Compare curve values at specific times - with proper layer evaluation."""
+        """Compare curve values at specific times - with proper layer evaluation.
+
+        DEPRECATED: This method reads local-space attribute values after layer composition.
+        For proper validation, use get_world_transform_values() instead to compare
+        world space transforms, which is the ground truth for whether objects match.
+
+        This method is kept for backward compatibility and special cases where you
+        specifically need to inspect local-space curve values.
+        """
         values = []
 
         # Small delay to ensure evaluation completes
@@ -98,33 +150,52 @@ class QuickKeysTestSuite:
 
         return values
 
-    def validate_bake(self, source, target, times, attrs=None, is_rotation=None):
-        """Validate that target matches source at given times.
+    def validate_bake(self, source, target, times, attrs=None, is_rotation=None, tolerance=0.001):
+        """Validate that target matches source at given times using WORLD SPACE values.
+
+        This is the ground truth validation - we compare the final world space transforms
+        to ensure both objects end up in the same position/rotation, regardless of how
+        the animation is stored in layers.
 
         Args:
-            is_rotation: If True, use rotation normalization. If None, auto-detect from attr name.
+            source (str): Source node name
+            target (str): Target node name
+            times (list): Frame numbers to validate
+            attrs (list): Attributes to check (default: all transform attrs)
+            is_rotation: Deprecated, kept for compatibility
+            tolerance (float): Tolerance for comparison (default: 0.001)
+
+        Returns:
+            list: Error messages if validation fails, empty list if passed
         """
         if attrs is None:
             attrs = ['translateX', 'translateY', 'translateZ',
                     'rotateX', 'rotateY', 'rotateZ',
                     'scaleX', 'scaleY', 'scaleZ']
 
+        # Get world space transform values for both source and target
+        source_world = self.get_world_transform_values(source, times)
+        target_world = self.get_world_transform_values(target, times)
+
         errors = []
         for attr in attrs:
-            source_vals = self.compare_curves(source, attr, times)
-            target_vals = self.compare_curves(target, attr, times)
+            source_vals = source_world[attr]
+            target_vals = target_world[attr]
 
             # Determine if this is a rotation attribute
-            is_rot = is_rotation if is_rotation is not None else attr.startswith('rotate')
+            is_rot = attr.startswith('rotate')
 
-            for i, (time, sv, tv) in enumerate(zip(times, source_vals, target_vals)):
+            for i, time in enumerate(times):
+                sv = source_vals[i]
+                tv = target_vals[i]
+
                 if is_rot:
                     # Normalize rotations for comparison
                     sv = self.normalize_rotation(sv)
                     tv = self.normalize_rotation(tv)
 
                 diff = abs(sv - tv)
-                if diff > 0.001:
+                if diff > tolerance:
                     errors.append(f"  {attr} @ frame {time}: source={sv:.6f}, target={tv:.6f}, diff={diff:.6f}")
 
         return errors
@@ -363,16 +434,15 @@ class QuickKeysTestSuite:
 
                 # Validate - use slightly relaxed tolerance for rotation orders
                 # due to potential floating point accumulation in matrix conversions
+                # Compare WORLD SPACE values to get ground truth results
                 times = [1, 50, 100]
-                source_vals_all = {}
-                target_vals_all = {}
+
+                # Get world space transform values for proper validation
+                source_world = self.get_world_transform_values(source, times)
+                target_world = self.get_world_transform_values(target, times)
 
                 attrs = ['translateX', 'translateY', 'translateZ',
                         'rotateX', 'rotateY', 'rotateZ']
-
-                for attr in attrs:
-                    source_vals_all[attr] = self.compare_curves(source, attr, times)
-                    target_vals_all[attr] = self.compare_curves(target, attr, times)
 
                 # Check with slightly relaxed tolerance (1.0 instead of 0.001)
                 # for rotation order tests due to gimbal and matrix conversion artifacts
@@ -380,8 +450,8 @@ class QuickKeysTestSuite:
                 for attr in attrs:
                     is_rot = attr.startswith('rotate')
                     for i, time in enumerate(times):
-                        sv = source_vals_all[attr][i]
-                        tv = target_vals_all[attr][i]
+                        sv = source_world[attr][i]
+                        tv = target_world[attr][i]
 
                         if is_rot:
                             sv = self.normalize_rotation(sv)
@@ -491,24 +561,23 @@ class QuickKeysTestSuite:
                                         layer=target_layer, sample_by=1, euler_filter=True)
 
                 # Validate - target should now match source exactly despite the other layers
+                # Use WORLD SPACE comparison - this is the ground truth!
                 times = [1, 25, 50, 75, 100]
-                source_vals_all = {}
-                target_vals_all = {}
+
+                # Get world space transform values for proper validation
+                source_world = self.get_world_transform_values(source, times)
+                target_world = self.get_world_transform_values(target, times)
 
                 attrs = ['translateX', 'translateY', 'translateZ',
                         'rotateX', 'rotateY', 'rotateZ']
-
-                for attr in attrs:
-                    source_vals_all[attr] = self.compare_curves(source, attr, times)
-                    target_vals_all[attr] = self.compare_curves(target, attr, times)
 
                 # Check with relaxed tolerance for rotation accumulation modes
                 errors = []
                 for attr in attrs:
                     is_rot = attr.startswith('rotate')
                     for i, time in enumerate(times):
-                        sv = source_vals_all[attr][i]
-                        tv = target_vals_all[attr][i]
+                        sv = source_world[attr][i]
+                        tv = target_world[attr][i]
 
                         if is_rot:
                             sv = self.normalize_rotation(sv)
@@ -774,15 +843,23 @@ class QuickKeysTestSuite:
                                     layer=layer, sample_by=1)
 
             # Validate only the Y rotation (the one we're actually animating)
+            # Use WORLD SPACE comparison for ground truth
             times = [1, 50, 100]
             rotate_attrs = ['rotateY']
 
+            # Get world space rotation values
+            source_world = self.get_world_transform_values(source, times)
+            target_world = self.get_world_transform_values(target, times)
+
             errors = []
             for attr in rotate_attrs:
-                source_vals = self.compare_curves(source, attr, times)
-                target_vals = self.compare_curves(target, attr, times)
+                source_vals = source_world[attr]
+                target_vals = target_world[attr]
 
-                for i, (time, sv, tv) in enumerate(zip(times, source_vals, target_vals)):
+                for i, time in enumerate(times):
+                    sv = source_vals[i]
+                    tv = target_vals[i]
+
                     sv = self.normalize_rotation(sv)
                     tv = self.normalize_rotation(tv)
 
