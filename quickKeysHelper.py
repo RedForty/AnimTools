@@ -676,8 +676,8 @@ def calculateRotationDeltaQuaternion(world_rx, world_ry, world_rz,
     Calculate rotation delta using quaternion math.
 
     For additive layers with "layer" rotation accumulation mode:
-        world_quat = composite_quat * delta_quat
-        delta_quat = inverse(composite_quat) * world_quat
+        world_quat = delta_quat * composite_quat (Maya's quaternion composition order)
+        delta_quat = world_quat * inverse(composite_quat)
 
     Args:
         world_rx, world_ry, world_rz (float): Target world rotation in degrees
@@ -691,9 +691,10 @@ def calculateRotationDeltaQuaternion(world_rx, world_ry, world_rz,
     world_quat = eulerToQuaternion(world_rx, world_ry, world_rz, rotation_order)
     composite_quat = eulerToQuaternion(composite_rx, composite_ry, composite_rz, rotation_order)
 
-    # Calculate delta: delta_quat = inverse(composite_quat) * world_quat
+    # Calculate delta: delta_quat = world_quat * inverse(composite_quat)
+    # Note: Maya uses right-to-left quaternion multiplication
     composite_quat_inv = composite_quat.inverse()
-    delta_quat = composite_quat_inv * world_quat
+    delta_quat = world_quat * composite_quat_inv
 
     # Convert back to euler
     delta_rx, delta_ry, delta_rz = quaternionToEuler(delta_quat, rotation_order)

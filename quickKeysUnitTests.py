@@ -121,13 +121,11 @@ class QuickKeysTestSuite:
             values['rotateY'].append(rotation[1])
             values['rotateZ'].append(rotation[2])
 
-            # Get scale - use objectSpace (relative) for scale queries
-            # Note: worldSpace scale queries can return incorrect values with animation layers
-            # For objects without parents, objectSpace scale equals local scale
-            scale = cmds.xform(node, query=True, objectSpace=True, scale=True)
-            values['scaleX'].append(scale[0])
-            values['scaleY'].append(scale[1])
-            values['scaleZ'].append(scale[2])
+            # Get scale - query attributes directly for proper layer composition
+            # xform scale queries can be unreliable with animation layers
+            values['scaleX'].append(cmds.getAttr(f"{node}.scaleX"))
+            values['scaleY'].append(cmds.getAttr(f"{node}.scaleY"))
+            values['scaleZ'].append(cmds.getAttr(f"{node}.scaleZ"))
 
         return values
 
