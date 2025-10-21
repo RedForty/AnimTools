@@ -532,18 +532,16 @@ def getWorldMatricesFast(node, times):
     return matrices
 
 
-def decomposeMatricesBatch(matrices, times, rotation_order='xyz', skip_euler_filter=False):
+def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=False):
     """
     Decompose multiple matrices in batch.
     Pre-allocates result dict for speed.
-
-    CRITICAL: Applies euler unwrapping to rotations to prevent flips.
 
     Args:
         matrices (dict): {time: 16-element matrix list}
         times (list): Frame numbers
         rotation_order (str): Rotation order
-        skip_euler_filter (bool): If True, skip euler unwrapping. Default: False
+        euler_filter (bool): If True, apply euler unwrapping to prevent flips. Default: False
 
     Returns:
         dict: {attr: [values]} for all 9 transform attributes
@@ -587,9 +585,9 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', skip_euler_fil
         ry = om2.MAngle(rotation.y).asDegrees()
         rz = om2.MAngle(rotation.z).asDegrees()
 
-        # CRITICAL: Unwrap rotations to prevent flips
+        # Unwrap rotations to prevent flips (if enabled)
         # If we have a previous rotation, adjust current to be continuous
-        if not skip_euler_filter and prev_rotation is not None:
+        if euler_filter and prev_rotation is not None:
             rx = unwrapAngle(rx, prev_rotation[0])
             ry = unwrapAngle(ry, prev_rotation[1])
             rz = unwrapAngle(rz, prev_rotation[2])
@@ -598,7 +596,7 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', skip_euler_fil
         results['rotateY'].append(ry)
         results['rotateZ'].append(rz)
 
-        if not skip_euler_filter:
+        if euler_filter:
             prev_rotation = (rx, ry, rz)
 
         # Scale
@@ -728,13 +726,13 @@ def eulerFilter(rot_x, rot_y, rot_z):
 # ============================================================================
 
 def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
-                                attrs=None, rotation_order='xyz', skip_euler_filter=False):
+                                attrs=None, rotation_order='xyz', euler_filter=False):
     """
     Ultra-optimized version of setTransformKeysOnLayer.
     Uses caching and direct curve evaluation.
 
     Args:
-        skip_euler_filter (bool): If True, skip euler unwrapping. Default: False
+        euler_filter (bool): If True, apply euler unwrapping to prevent flips. Default: False
     """
     if layer is None:
         # from . import getActiveAnimationLayer
@@ -748,7 +746,7 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
     is_matrix = isinstance(first_val, (list, tuple)) and len(first_val) == 16
 
     if is_matrix:
-        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, skip_euler_filter)
+        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, euler_filter)
         if attrs:
             attr_values = {k: v for k, v in attr_values.items() if k in attrs}
     else:
@@ -789,12 +787,12 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
 
 
 def bakeTransformToLayerFast(source_node, target_node, start_time, end_time,
-                             layer=None, sample_by=1, attrs=None, skip_euler_filter=False):
+                             layer=None, sample_by=1, attrs=None, euler_filter=False):
     """
     Ultra-optimized baking using pure API for matrix queries.
 
     Args:
-        skip_euler_filter (bool): If True, skip euler unwrapping. Default: False
+        euler_filter (bool): If True, apply euler unwrapping to prevent flips. Default: False
     """
     if layer is None:
         # from . import getActiveAnimationLayer
@@ -818,7 +816,7 @@ def bakeTransformToLayerFast(source_node, target_node, start_time, end_time,
     # Set keys using ultra-fast method
     setTransformKeysOnLayerFast(target_node, matrices, times, layer,
                                 attrs=attrs, rotation_order=rot_order_str,
-                                skip_euler_filter=skip_euler_filter)
+                                euler_filter=euler_filter)
 
     print(f"Baked {len(times)} frames from '{source_node}' to '{target_node}' "
           f"on layer '{layer}'")
@@ -854,7 +852,7 @@ def getActiveAnimationLayer():
 # ============================================================================
 
 def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
-                   layer='BaseAnimation', sample_by=1, create_locator=True, skip_euler_filter=False):
+                   layer='BaseAnimation', sample_by=1, create_locator=True, euler_filter=False):
     """
     Clone one transform to another in world space.
 
@@ -868,7 +866,7 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
         layer (str): Animation layer to key on. Default: 'BaseAnimation'
         sample_by (int): Sample every N frames. Default: 1 (every frame)
         create_locator (bool): If True and no target, creates a locator. Default: True
-        skip_euler_filter (bool): If True, skip euler unwrapping. Default: False
+        euler_filter (bool): If True, apply euler unwrapping to prevent rotation flips. Default: False
 
     Returns:
         str: Target object name
@@ -892,8 +890,8 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
         # Sample every 5 frames (faster):
         cloneTransform(sample_by=5)
 
-        # Skip euler filtering:
-        cloneTransform(skip_euler_filter=True)
+        # Enable euler filtering:
+        cloneTransform(euler_filter=True)
     """
     # Get source and target from selection if not provided
     if source is None or target is None:
@@ -940,7 +938,7 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
         end_time=end_frame,
         layer=layer,
         sample_by=sample_by,
-        skip_euler_filter=skip_euler_filter
+        euler_filter=euler_filter
     )
 
     return target
