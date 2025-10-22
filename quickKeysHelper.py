@@ -390,10 +390,17 @@ def evaluateCurvesDirectlyFallback(cache, times):
                 if plug:
                     try:
                         val = plug.asDouble(ctx)
+                        # Workaround: If scale is exactly 0.0 when querying composite values,
+                        # it's likely a Maya bug with animation layers. Default to 1.0 (identity).
+                        # Note: Legitimate near-zero scale (0.001, etc) will be preserved.
+                        if attr.startswith('scale') and val == 0.0:
+                            val = 1.0
                     except:
-                        val = 0.0
+                        # Default value depends on attribute type
+                        # Scale defaults to 1.0 (identity), others to 0.0
+                        val = 1.0 if attr.startswith('scale') else 0.0
                 else:
-                    val = 0.0
+                    val = 1.0 if attr.startswith('scale') else 0.0
                 results[attr].append(val)
 
         return results
@@ -433,7 +440,7 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             print(f"  {attr}: {world_values[attr][0]:.6f}")
     # In calculateDeltaValuesFast(), expand the debug:
     print(f"World values being used (should be SOURCE's values):")
-    for attr in ['translateX', 'translateY', 'translateZ', 'rotateX', 'rotateY', 'rotateZ']:
+    for attr in ['translateX', 'translateY', 'translateZ', 'rotateX', 'rotateY', 'rotateZ', 'scaleX', 'scaleY', 'scaleZ']:
         if attr in world_values:
             print(f"  {attr}: {world_values[attr][0]:.6f}")
     # Override layer - just return world values
@@ -561,6 +568,13 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             deltas.append(delta)
 
         delta_values[attr] = deltas
+
+    # DEBUG: Print scale delta values
+    print(f"\n=== SCALE DELTA DEBUG ===")
+    for attr in ['scaleX', 'scaleY', 'scaleZ']:
+        if attr in delta_values:
+            print(f"  {attr} deltas (first 3): {delta_values[attr][:3]}")
+    print("=== END SCALE DEBUG ===\n")
 
     return delta_values
 
@@ -715,7 +729,7 @@ def calculateRotationDeltaQuaternion(world_rx, world_ry, world_rz,
     return (delta_rx, delta_ry, delta_rz)
 
 
-def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=False):
+def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=False, node=None):
     """
     Decompose multiple matrices in batch.
     Pre-allocates result dict for speed.
@@ -725,6 +739,8 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
         times (list): Frame numbers
         rotation_order (str): Rotation order
         euler_filter (bool): If True, apply euler unwrapping to prevent flips. Default: False
+        node (str): Node name - if provided, scale will be queried directly from attributes
+                    instead of extracted from matrix (workaround for animation layer bug)
 
     Returns:
         dict: {attr: [values]} for all 9 transform attributes
@@ -782,15 +798,45 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
         if euler_filter:
             prev_rotation = (rx, ry, rz)
 
-        # Scale
-        scale = m_transform.scale(om2.MSpace.kWorld)
-        results['scaleX'].append(scale[0])
-        results['scaleY'].append(scale[1])
-        results['scaleZ'].append(scale[2])
+        # Scale - will be populated later (see below loop)
 
         if euler_filter:
             results['rotateX'], results['rotateY'], results['rotateZ'] = eulerFilter(
                 results['rotateX'], results['rotateY'], results['rotateZ'])
+
+    # Query scale attributes directly if node is provided
+    # This is a workaround for Maya bug where worldMatrix contains zero-length basis vectors
+    # when animation layers with multiply scale mode are present but scale isn't keyed
+    if node:
+        # Use cmds.getAttr() which properly handles animation layers
+        # API plug queries with MDGContext don't work reliably with layers
+        for time in times:
+            cmds.currentTime(time)
+            for attr in ['scaleX', 'scaleY', 'scaleZ']:
+                try:
+                    val = cmds.getAttr(f"{node}.{attr}")
+                    # Sanity check: if scale is 0.0, it might be a bug, default to 1.0
+                    if val == 0.0:
+                        val = 1.0
+                except:
+                    val = 1.0  # Default scale
+                results[attr].append(val)
+    else:
+        # Fallback: extract from matrix (may return 0,0,0 with animation layers)
+        # Re-read matrices to get scale
+        import math
+        for time in times:
+            matrix_list = matrices[time]
+            m_matrix = om2.MMatrix(matrix_list)
+
+            # Scale is the length of the basis vectors
+            sx = math.sqrt(m_matrix[0] * m_matrix[0] + m_matrix[1] * m_matrix[1] + m_matrix[2] * m_matrix[2])
+            sy = math.sqrt(m_matrix[4] * m_matrix[4] + m_matrix[5] * m_matrix[5] + m_matrix[6] * m_matrix[6])
+            sz = math.sqrt(m_matrix[8] * m_matrix[8] + m_matrix[9] * m_matrix[9] + m_matrix[10] * m_matrix[10])
+
+            results['scaleX'].append(sx)
+            results['scaleY'].append(sy)
+            results['scaleZ'].append(sz)
 
     return results
 
@@ -909,12 +955,14 @@ def eulerFilter(rot_x, rot_y, rot_z):
 # ============================================================================
 
 def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
-                                attrs=None, rotation_order='xyz', euler_filter=False):
+                                attrs=None, rotation_order='xyz', euler_filter=False, source_node=None):
     """
     Ultra-optimized version of setTransformKeysOnLayer.
     Uses caching and direct curve evaluation.
 
     Args:
+        node (str): Target node to set keys on
+        source_node (str): Source node that transform_data came from (for scale query workaround)
         euler_filter (bool): If True, apply euler unwrapping to prevent flips. Default: False
     """
     if layer is None:
@@ -929,7 +977,10 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
     is_matrix = isinstance(first_val, (list, tuple)) and len(first_val) == 16
 
     if is_matrix:
-        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, euler_filter)
+        # Use source_node for scale query (workaround for animation layer bug)
+        # If source_node not provided, fall back to extracting from matrix
+        scale_query_node = source_node if source_node else None
+        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, euler_filter, node=scale_query_node)
         if attrs:
             attr_values = {k: v for k, v in attr_values.items() if k in attrs}
     else:
@@ -999,7 +1050,7 @@ def bakeTransformToLayerFast(source_node, target_node, start_time, end_time,
     # Set keys using ultra-fast method
     setTransformKeysOnLayerFast(target_node, matrices, times, layer,
                                 attrs=attrs, rotation_order=rot_order_str,
-                                euler_filter=euler_filter)
+                                euler_filter=euler_filter, source_node=source_node)
 
     print(f"Baked {len(times)} frames from '{source_node}' to '{target_node}' "
           f"on layer '{layer}'")
