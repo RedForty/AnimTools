@@ -808,30 +808,18 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
     # This is a workaround for Maya bug where worldMatrix contains zero-length basis vectors
     # when animation layers with multiply scale mode are present but scale isn't keyed
     if node:
-        # Get scale plugs
-        scale_plugs = {}
-        selList = om2.MSelectionList()
-        for attr in ['scaleX', 'scaleY', 'scaleZ']:
-            plug_name = f"{node}.{attr}"
-            try:
-                selList.clear()
-                selList.add(plug_name)
-                scale_plugs[attr] = selList.getPlug(0)
-            except:
-                scale_plugs[attr] = None
-
-        # Query scale at each time
+        # Use cmds.getAttr() which properly handles animation layers
+        # API plug queries with MDGContext don't work reliably with layers
         for time in times:
-            ctx = om2.MDGContext(om2.MTime(time, om2.MTime.uiUnit()))
+            cmds.currentTime(time)
             for attr in ['scaleX', 'scaleY', 'scaleZ']:
-                plug = scale_plugs[attr]
-                if plug:
-                    try:
-                        val = plug.asDouble(ctx)
-                    except:
-                        val = 1.0  # Default scale
-                else:
-                    val = 1.0
+                try:
+                    val = cmds.getAttr(f"{node}.{attr}")
+                    # Sanity check: if scale is 0.0, it might be a bug, default to 1.0
+                    if val == 0.0:
+                        val = 1.0
+                except:
+                    val = 1.0  # Default scale
                 results[attr].append(val)
     else:
         # Fallback: extract from matrix (may return 0,0,0 with animation layers)
