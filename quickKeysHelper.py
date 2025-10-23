@@ -440,11 +440,6 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
     logger.debug(f"Target node: {cache.node}")
     logger.debug(f"Target layer: {cache.target_layer}")
     logger.debug(f"World values being used (should be SOURCE's values):")
-    for attr in ['translateX', 'translateY', 'translateZ']:
-        if attr in world_values:
-            logger.debug(f"  {attr}: {world_values[attr][0]:.6f}")
-    # In calculateDeltaValuesFast(), expand the debug:
-    logger.debug(f"World values being used (should be SOURCE's values):")
     for attr in ['translateX', 'translateY', 'translateZ', 'rotateX', 'rotateY', 'rotateZ', 'scaleX', 'scaleY', 'scaleZ']:
         if attr in world_values:
             logger.debug(f"  {attr}: {world_values[attr][0]:.6f}")
@@ -610,12 +605,6 @@ def getWorldMatricesFast(node, times):
     dag_path = selList.getDagPath(0)
 
     logger.debug(f"DAG path: {dag_path.fullPathName()}")
-
-
-    # Get the DAG path once
-    selList = om2.MSelectionList()
-    selList.add(node)
-    dag_path = selList.getDagPath(0)
 
     # Get the worldMatrix plug
     fn_transform = om2.MFnTransform(dag_path)
@@ -961,6 +950,36 @@ def eulerFilter(rot_x, rot_y, rot_z):
 # Optimized High-Level Functions
 # ============================================================================
 
+def isNodeOnAnimationLayers(node):
+    """
+    Fast check if node is connected to any animation layers.
+
+    Args:
+        node (str): Node name
+
+    Returns:
+        bool: True if node is on any animation layer (excluding BaseAnimation with no blends)
+    """
+    try:
+        # Check for any blend nodes on transform attributes
+        for attr in ['translateX', 'rotateX', 'scaleX']:
+            plug_name = f"{node}.{attr}"
+
+            # Check for any animation blend nodes
+            blend_types = ['animBlendNodeAdditiveDL', 'animBlendNodeAdditiveRotation',
+                          'animBlendNodeAdditiveScale']
+
+            for blend_type in blend_types:
+                connections = cmds.listConnections(plug_name, source=True,
+                                                  destination=False, type=blend_type)
+                if connections:
+                    return True
+
+        return False
+    except:
+        return False
+
+
 def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
                                 attrs=None, rotation_order='xyz', euler_filter=False, source_node=None):
     """
@@ -1002,11 +1021,17 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
                         attr_values[attr] = []
                     attr_values[attr].append(value)
 
-    # Build cache once
-    cache = LayerStackCache(node, list(attr_values.keys()), layer)
+    # FAST PATH: If node is not on any animation layers, skip all layer processing
+    # This provides huge speedup for simple cases (no blend nodes, no delta calculation needed)
+    if layer == 'BaseAnimation' and not isNodeOnAnimationLayers(node):
+        logger.debug(f"Fast path: {node} not on any animation layers, skipping delta calculation")
+        final_values = attr_values
+    else:
+        # Build cache once
+        cache = LayerStackCache(node, list(attr_values.keys()), layer)
 
-    # Calculate deltas using fast method
-    final_values = calculateDeltaValuesFast(cache, times, attr_values, use_direct_eval=True)
+        # Calculate deltas using fast method
+        final_values = calculateDeltaValuesFast(cache, times, attr_values, use_direct_eval=True)
 
     # Ensure target layer is unmuted
     if layer != 'BaseAnimation' and cmds.objExists(layer):
@@ -1184,13 +1209,91 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
     return target
 
 
+def cloneTransformBatch(source_target_pairs, start_frame=None, end_frame=None,
+                        layer='BaseAnimation', sample_by=1, euler_filter=False):
+    """
+    Clone multiple transforms efficiently in batch mode.
+    Optimized for handling hundreds of objects at once.
+
+    Args:
+        source_target_pairs (list): List of (source, target) tuples
+        start_frame (int): Start frame. If None, uses timeline start.
+        end_frame (int): End frame. If None, uses timeline end.
+        layer (str): Animation layer to key on. Default: 'BaseAnimation'
+        sample_by (int): Sample every N frames. Default: 1
+        euler_filter (bool): Apply euler unwrapping. Default: False
+
+    Returns:
+        list: Target object names
+
+    Examples:
+        # Clone multiple objects with same frame range
+        pairs = [('source1', 'target1'), ('source2', 'target2'), ('source3', 'target3')]
+        cloneTransformBatch(pairs, start_frame=1, end_frame=100)
+
+        # Clone 100 objects efficiently
+        pairs = [(f'ctrl_{i}', f'baked_{i}') for i in range(100)]
+        cloneTransformBatch(pairs)
+    """
+    if not source_target_pairs:
+        return []
+
+    # Get frame range from timeline if not provided
+    if start_frame is None:
+        start_frame = int(cmds.playbackOptions(query=True, minTime=True))
+    if end_frame is None:
+        end_frame = int(cmds.playbackOptions(query=True, maxTime=True))
+
+    # Generate time list once
+    times = []
+    current_time = start_frame
+    while current_time <= end_frame:
+        times.append(current_time)
+        current_time += sample_by
+
+    logger.debug(f"Batch cloning {len(source_target_pairs)} objects over {len(times)} frames")
+
+    # Ensure all targets are on the layer if needed
+    if layer != 'BaseAnimation':
+        if not cmds.objExists(layer):
+            cmds.animLayer(layer)
+            logger.debug(f"Created animation layer: {layer}")
+
+        # Add all targets to layer at once
+        all_targets = [target for _, target in source_target_pairs]
+        cmds.select(all_targets, replace=True)
+        cmds.animLayer(layer, edit=True, addSelectedObjects=True)
+        cmds.select(clear=True)
+
+    # Process each pair (could be parallelized further in the future)
+    targets = []
+    for i, (source, target) in enumerate(source_target_pairs):
+        if i % 10 == 0:  # Progress logging every 10 objects
+            logger.debug(f"Processing object {i+1}/{len(source_target_pairs)}: {source} -> {target}")
+
+        # Get all matrices using fast API method
+        matrices = getWorldMatricesFast(source, times)
+
+        # Get rotation order
+        rot_order = cmds.getAttr(f"{source}.rotateOrder")
+        rot_order_names = ['xyz', 'yzx', 'zxy', 'xzy', 'yxz', 'zyx']
+        rot_order_str = rot_order_names[rot_order]
+
+        # Set keys using ultra-fast method
+        setTransformKeysOnLayerFast(target, matrices, times, layer,
+                                    attrs=None, rotation_order=rot_order_str,
+                                    euler_filter=euler_filter, source_node=source)
+
+        targets.append(target)
+
+    logger.debug(f"Batch clone complete: {len(targets)} objects processed")
+    return targets
+
+
 """
 Diagnostic tool to trace quickKeys delta calculation.
 Add this to quickKeysHelper.py to debug baking issues.
 """
-import maya.cmds as cmds
-import maya.api.OpenMaya as om2
-
 
 def diagnose_bake_calculation(node, target_layer, frame=1):
     """
