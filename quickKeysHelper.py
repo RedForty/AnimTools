@@ -5,6 +5,7 @@ Maximum performance by bypassing DG evaluation and reading curves directly.
 FIXED: Properly handles muted layers - they are completely ignored in delta calculation.
 """
 import maya.cmds as cmds
+import maya.OpenMaya as om1
 import maya.api.OpenMaya as om2
 import maya.api.OpenMayaAnim as oma
 
@@ -728,8 +729,39 @@ def calculateRotationDeltaQuaternion(world_rx, world_ry, world_rz,
 
     return (delta_rx, delta_ry, delta_rz)
 
+def getScale( matrix ):
+    '''
+    Returns the scale component of a given matrix
 
-def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=False, node=None):
+    :param MMatrix matrix: MMatrix from which to extract the scale component
+    :returns: MVector object containg the scale component.
+    :rtype: MVector
+    '''
+    matrixT = om1.MTransformationMatrix ( matrix )
+
+    util = om1.MScriptUtil()
+    util.createFromDouble(0.0, 0.0, 0.0)
+    ptr = util.asDoublePtr()
+
+    matrixT.getScale( ptr, om1.MSpace.kTransform )
+
+    outVec = om1.MVector()
+
+    outVec.x = util.getDoubleArrayItem(ptr, 0)
+    outVec.y = util.getDoubleArrayItem(ptr, 1)
+    outVec.z = util.getDoubleArrayItem(ptr, 2)
+
+    return outVec
+
+
+def API1Matrix(mlist): # where mlist is a list of floats
+    matrix = om1.MMatrix()
+    om1.MScriptUtil.createMatrixFromList(mlist, matrix)
+    return matrix
+
+
+
+def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=False):
     """
     Decompose multiple matrices in batch.
     Pre-allocates result dict for speed.
@@ -739,8 +771,6 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
         times (list): Frame numbers
         rotation_order (str): Rotation order
         euler_filter (bool): If True, apply euler unwrapping to prevent flips. Default: False
-        node (str): Node name - if provided, scale will be queried directly from attributes
-                    instead of extracted from matrix (workaround for animation layer bug)
 
     Returns:
         dict: {attr: [values]} for all 9 transform attributes
@@ -764,7 +794,7 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
     rot_order = rotation_order_map.get(rotation_order.lower(), om2.MEulerRotation.kXYZ)
 
     # Decompose each matrix
-    prev_rotation = None
+    prev_rotation = ()
     for time in times:
         matrix_list = matrices[time]
         m_matrix = om2.MMatrix(matrix_list)
@@ -786,7 +816,7 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
 
         # Unwrap rotations to prevent flips (if enabled)
         # If we have a previous rotation, adjust current to be continuous
-        if euler_filter and prev_rotation is not None:
+        if euler_filter and len(prev_rotation) > 0:
             rx = unwrapAngle(rx, prev_rotation[0])
             ry = unwrapAngle(ry, prev_rotation[1])
             rz = unwrapAngle(rz, prev_rotation[2])
@@ -798,45 +828,18 @@ def decomposeMatricesBatch(matrices, times, rotation_order='xyz', euler_filter=F
         if euler_filter:
             prev_rotation = (rx, ry, rz)
 
-        # Scale - will be populated later (see below loop)
 
         if euler_filter:
             results['rotateX'], results['rotateY'], results['rotateZ'] = eulerFilter(
                 results['rotateX'], results['rotateY'], results['rotateZ'])
 
-    # Query scale attributes directly if node is provided
-    # This is a workaround for Maya bug where worldMatrix contains zero-length basis vectors
-    # when animation layers with multiply scale mode are present but scale isn't keyed
-    if node:
-        # Use cmds.getAttr() which properly handles animation layers
-        # API plug queries with MDGContext don't work reliably with layers
-        for time in times:
-            cmds.currentTime(time)
-            for attr in ['scaleX', 'scaleY', 'scaleZ']:
-                try:
-                    val = cmds.getAttr(f"{node}.{attr}")
-                    # Sanity check: if scale is 0.0, it might be a bug, default to 1.0
-                    if val == 0.0:
-                        val = 1.0
-                except:
-                    val = 1.0  # Default scale
-                results[attr].append(val)
-    else:
-        # Fallback: extract from matrix (may return 0,0,0 with animation layers)
-        # Re-read matrices to get scale
-        import math
-        for time in times:
-            matrix_list = matrices[time]
-            m_matrix = om2.MMatrix(matrix_list)
 
-            # Scale is the length of the basis vectors
-            sx = math.sqrt(m_matrix[0] * m_matrix[0] + m_matrix[1] * m_matrix[1] + m_matrix[2] * m_matrix[2])
-            sy = math.sqrt(m_matrix[4] * m_matrix[4] + m_matrix[5] * m_matrix[5] + m_matrix[6] * m_matrix[6])
-            sz = math.sqrt(m_matrix[8] * m_matrix[8] + m_matrix[9] * m_matrix[9] + m_matrix[10] * m_matrix[10])
+        # Scale -
+        vecScale = m_transform.scale(om2.MSpace.kWorld)
+        results['scaleX'].append(vecScale[0])
+        results['scaleY'].append(vecScale[1])
+        results['scaleZ'].append(vecScale[2])
 
-            results['scaleX'].append(sx)
-            results['scaleY'].append(sy)
-            results['scaleZ'].append(sz)
 
     return results
 
@@ -979,8 +982,7 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
     if is_matrix:
         # Use source_node for scale query (workaround for animation layer bug)
         # If source_node not provided, fall back to extracting from matrix
-        scale_query_node = source_node if source_node else None
-        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, euler_filter, node=scale_query_node)
+        attr_values = decomposeMatricesBatch(transform_data, times, rotation_order, euler_filter)
         if attrs:
             attr_values = {k: v for k, v in attr_values.items() if k in attrs}
     else:
@@ -1016,11 +1018,11 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
     # Call quickKeys plugin
     cmds.quickKeys(attr_list, f=times, v=flat_values, l=layer)
 
-    print(f"Set {len(times)} keyframes on {len(attr_values)} attributes "
+    print(f"Set {len(times)} keyframes on {len(attr_values)} attributes on {attr_values} "
           f"for '{node}' on layer '{layer}'")
 
 
-def bakeTransformToLayerFast(source_node, target_node, start_time, end_time,
+def bakeTransformToLayerFast(source_node, target_node, start_frame, end_frame,
                              layer=None, sample_by=1, attrs=None, euler_filter=False):
     """
     Ultra-optimized baking using pure API for matrix queries.
@@ -1034,8 +1036,8 @@ def bakeTransformToLayerFast(source_node, target_node, start_time, end_time,
 
     # Generate time list
     times = []
-    current_time = start_time
-    while current_time <= end_time:
+    current_time = start_frame
+    while current_time <= end_frame:
         times.append(current_time)
         current_time += sample_by
 
@@ -1076,7 +1078,7 @@ def getActiveAnimationLayer():
     active_layers = cmds.animLayer(query=True, bestAnimLayer=True)
     if active_layers:
         return active_layers[0]
-    return 'BaseAnimation'
+    return root_layer
 
 
 # Add this to the END of quickKeysHelper.py
@@ -1168,8 +1170,8 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
     bakeTransformToLayerFast(
         source_node=source,
         target_node=target,
-        start_time=start_frame,
-        end_time=end_frame,
+        start_frame=start_frame,
+        end_frame=end_frame,
         layer=layer,
         sample_by=sample_by,
         euler_filter=euler_filter
@@ -1491,8 +1493,9 @@ def cprofile_function(func):
 # ============================================================================
 @cprofile_function
 def run():
-    cloneTransform('source1', 'target', start_frame=1, end_frame=1000, layer="AnimLayer2", euler_filter=True)
+    cloneTransform('test16_source', 'test16_target', start_frame=1, end_frame=100, layer="TargetLayer", euler_filter=True)
     # cloneTransform(start_frame=1, end_frame=1000, euler_filter=False)
+    # bakeTransformToLayer('test16_source', 'test16_target', start_frame=1, end_frame=100, euler_filter=True)
 
 if __name__ == "__main__":
     run()
