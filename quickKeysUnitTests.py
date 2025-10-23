@@ -921,6 +921,8 @@ class QuickKeysTestSuite:
 
             # Bake target (should capture source's final composed result)
             target_layer = self.create_layer('TargetLayer', override=False, add_objects=target)
+
+            cmds.refresh() # <-- if we don't do this, maya reads the WRONG VALUES for scale!
             qkh.bakeTransformToLayer(source, target, 1, 100,
                                     layer=target_layer, sample_by=1)
 
@@ -1541,7 +1543,7 @@ def run_tests():
 
     # Import the optimized helper
     try:
-        from klugTools import quickKeysHelper as qkh
+        from AnimTools import quickKeysHelper as qkh
     except ImportError:
         print("\n[ERROR] Could not import klugTools.quickKeysHelper")
         print("   Make sure quickKeysHelper_optimized.py is deployed to klugTools/quickKeysHelper.py")
@@ -1568,5 +1570,3 @@ def run_tests():
 # Run when executed
 if __name__ == "__main__":
     run_tests()
-    # suite = QuickKeysTestSuite()
-    # suite.test_muted_layer(qkh)
