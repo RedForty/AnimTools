@@ -8,6 +8,10 @@ import maya.cmds as cmds
 import maya.OpenMaya as om1
 import maya.api.OpenMaya as om2
 import maya.api.OpenMayaAnim as oma
+import logging
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -100,7 +104,7 @@ class LayerStackCache:
                     try:
                         is_muted = cmds.getAttr(f"{layer}.mute")
                         if is_muted:
-                            print(f"    Skipping muted layer '{layer}' for {attr}")
+                            logger.debug(f"    Skipping muted layer '{layer}' for {attr}")
                             continue
                     except:
                         pass
@@ -432,18 +436,13 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
     """Ultra-fast delta calculation using direct curve evaluation."""
 
     # DEBUG: Print what world values we're trying to match
-    print(f"\n=== calculateDeltaValuesFast DEBUG ===")
-    print(f"Target node: {cache.node}")
-    print(f"Target layer: {cache.target_layer}")
-    print(f"World values being used (should be SOURCE's values):")
-    for attr in ['translateX', 'translateY', 'translateZ']:
-        if attr in world_values:
-            print(f"  {attr}: {world_values[attr][0]:.6f}")
-    # In calculateDeltaValuesFast(), expand the debug:
-    print(f"World values being used (should be SOURCE's values):")
+    logger.debug(f"\n=== calculateDeltaValuesFast DEBUG ===")
+    logger.debug(f"Target node: {cache.node}")
+    logger.debug(f"Target layer: {cache.target_layer}")
+    logger.debug(f"World values being used (should be SOURCE's values):")
     for attr in ['translateX', 'translateY', 'translateZ', 'rotateX', 'rotateY', 'rotateZ', 'scaleX', 'scaleY', 'scaleZ']:
         if attr in world_values:
-            print(f"  {attr}: {world_values[attr][0]:.6f}")
+            logger.debug(f"  {attr}: {world_values[attr][0]:.6f}")
     # Override layer - just return world values
     if cache.layer_is_override[cache.target_layer] or cache.target_layer == 'BaseAnimation':
         return world_values
@@ -465,11 +464,11 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
         try:
             composite_values = evaluateCurvesDirectly(cache, times)
         except Exception as e:
-            print(f"Direct curve evaluation failed: {e}, falling back to plug evaluation")
+            logger.debug(f"Direct curve evaluation failed: {e}, falling back to plug evaluation")
             composite_values = evaluateCurvesDirectlyFallback(cache, times)
     else:
         if any_layer_uses_quat_rotation:
-            print(f"Using Maya evaluation for composite because layers use quaternion rotation mode")
+            logger.debug(f"Using Maya evaluation for composite because layers use quaternion rotation mode")
         composite_values = evaluateCurvesDirectlyFallback(cache, times)
 
     # Calculate deltas with rotation unwrapping
@@ -483,9 +482,9 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
 
     # Process rotation attributes together if using quaternion mode
     if use_quat_rotation:
-        print(f"\n=== QUATERNION ROTATION MODE DEBUG ===")
-        print(f"Target layer: {cache.target_layer}")
-        print(f"Rotation order: {cache.rotation_order}")
+        logger.debug(f"\n=== QUATERNION ROTATION MODE DEBUG ===")
+        logger.debug(f"Target layer: {cache.target_layer}")
+        logger.debug(f"Rotation order: {cache.rotation_order}")
 
         # Calculate quaternion-based rotation deltas
         delta_rx_list = []
@@ -509,10 +508,10 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             composite_rz = om2.MAngle(composite_rz_rad, om2.MAngle.kRadians).asDegrees()
 
             if i == 0:  # Debug first frame
-                print(f"\nFrame {times[i]}:")
-                print(f"  World rotation (deg): ({world_rx:.2f}, {world_ry:.2f}, {world_rz:.2f})")
-                print(f"  Composite rotation (rad): ({composite_rx_rad:.4f}, {composite_ry_rad:.4f}, {composite_rz_rad:.4f})")
-                print(f"  Composite rotation (deg): ({composite_rx:.2f}, {composite_ry:.2f}, {composite_rz:.2f})")
+                logger.debug(f"\nFrame {times[i]}:")
+                logger.debug(f"  World rotation (deg): ({world_rx:.2f}, {world_ry:.2f}, {world_rz:.2f})")
+                logger.debug(f"  Composite rotation (rad): ({composite_rx_rad:.4f}, {composite_ry_rad:.4f}, {composite_rz_rad:.4f})")
+                logger.debug(f"  Composite rotation (deg): ({composite_rx:.2f}, {composite_ry:.2f}, {composite_rz:.2f})")
 
             delta_rx, delta_ry, delta_rz = calculateRotationDeltaQuaternion(
                 world_rx, world_ry, world_rz,
@@ -521,7 +520,7 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
             )
 
             if i == 0:  # Debug first frame
-                print(f"  Delta rotation (deg): ({delta_rx:.2f}, {delta_ry:.2f}, {delta_rz:.2f})")
+                logger.debug(f"  Delta rotation (deg): ({delta_rx:.2f}, {delta_ry:.2f}, {delta_rz:.2f})")
 
             # Unwrap deltas to be continuous
             if delta_rx_list:
@@ -536,7 +535,7 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
         delta_values['rotateX'] = delta_rx_list
         delta_values['rotateY'] = delta_ry_list
         delta_values['rotateZ'] = delta_rz_list
-        print("=== END QUATERNION DEBUG ===\n")
+        logger.debug("=== END QUATERNION DEBUG ===\n")
 
     # Process non-rotation attributes (or rotations if using component mode)
     for attr in cache.attrs:
@@ -571,11 +570,11 @@ def calculateDeltaValuesFast(cache, times, world_values, use_direct_eval=True):
         delta_values[attr] = deltas
 
     # DEBUG: Print scale delta values
-    print(f"\n=== SCALE DELTA DEBUG ===")
+    logger.debug(f"\n=== SCALE DELTA DEBUG ===")
     for attr in ['scaleX', 'scaleY', 'scaleZ']:
         if attr in delta_values:
-            print(f"  {attr} deltas (first 3): {delta_values[attr][:3]}")
-    print("=== END SCALE DEBUG ===\n")
+            logger.debug(f"  {attr} deltas (first 3): {delta_values[attr][:3]}")
+    logger.debug("=== END SCALE DEBUG ===\n")
 
     return delta_values
 
@@ -597,21 +596,15 @@ def getWorldMatricesFast(node, times):
     """
 
     # DEBUG: Verify which node we're reading
-    print(f"\n=== getWorldMatricesFast DEBUG ===")
-    print(f"Reading matrices from node: {node}")
+    logger.debug(f"\n=== getWorldMatricesFast DEBUG ===")
+    logger.debug(f"Reading matrices from node: {node}")
 
     # Get the DAG path once
     selList = om2.MSelectionList()
     selList.add(node)
     dag_path = selList.getDagPath(0)
 
-    print(f"DAG path: {dag_path.fullPathName()}")
-
-
-    # Get the DAG path once
-    selList = om2.MSelectionList()
-    selList.add(node)
-    dag_path = selList.getDagPath(0)
+    logger.debug(f"DAG path: {dag_path.fullPathName()}")
 
     # Get the worldMatrix plug
     fn_transform = om2.MFnTransform(dag_path)
@@ -957,6 +950,36 @@ def eulerFilter(rot_x, rot_y, rot_z):
 # Optimized High-Level Functions
 # ============================================================================
 
+def isNodeOnAnimationLayers(node):
+    """
+    Fast check if node is connected to any animation layers.
+
+    Args:
+        node (str): Node name
+
+    Returns:
+        bool: True if node is on any animation layer (excluding BaseAnimation with no blends)
+    """
+    try:
+        # Check for any blend nodes on transform attributes
+        for attr in ['translateX', 'rotateX', 'scaleX']:
+            plug_name = f"{node}.{attr}"
+
+            # Check for any animation blend nodes
+            blend_types = ['animBlendNodeAdditiveDL', 'animBlendNodeAdditiveRotation',
+                          'animBlendNodeAdditiveScale']
+
+            for blend_type in blend_types:
+                connections = cmds.listConnections(plug_name, source=True,
+                                                  destination=False, type=blend_type)
+                if connections:
+                    return True
+
+        return False
+    except:
+        return False
+
+
 def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
                                 attrs=None, rotation_order='xyz', euler_filter=False, source_node=None):
     """
@@ -998,11 +1021,17 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
                         attr_values[attr] = []
                     attr_values[attr].append(value)
 
-    # Build cache once
-    cache = LayerStackCache(node, list(attr_values.keys()), layer)
+    # FAST PATH: If node is not on any animation layers, skip all layer processing
+    # This provides huge speedup for simple cases (no blend nodes, no delta calculation needed)
+    if layer == 'BaseAnimation' and not isNodeOnAnimationLayers(node):
+        logger.debug(f"Fast path: {node} not on any animation layers, skipping delta calculation")
+        final_values = attr_values
+    else:
+        # Build cache once
+        cache = LayerStackCache(node, list(attr_values.keys()), layer)
 
-    # Calculate deltas using fast method
-    final_values = calculateDeltaValuesFast(cache, times, attr_values, use_direct_eval=True)
+        # Calculate deltas using fast method
+        final_values = calculateDeltaValuesFast(cache, times, attr_values, use_direct_eval=True)
 
     # Ensure target layer is unmuted
     if layer != 'BaseAnimation' and cmds.objExists(layer):
@@ -1018,7 +1047,7 @@ def setTransformKeysOnLayerFast(node, transform_data, times, layer=None,
     # Call quickKeys plugin
     cmds.quickKeys(attr_list, f=times, v=flat_values, l=layer)
 
-    print(f"Set {len(times)} keyframes on {len(attr_values)} attributes on {attr_values} "
+    logger.debug(f"Set {len(times)} keyframes on {len(attr_values)} attributes on {attr_values} "
           f"for '{node}' on layer '{layer}'")
 
 
@@ -1054,7 +1083,7 @@ def bakeTransformToLayerFast(source_node, target_node, start_frame, end_frame,
                                 attrs=attrs, rotation_order=rot_order_str,
                                 euler_filter=euler_filter, source_node=source_node)
 
-    print(f"Baked {len(times)} frames from '{source_node}' to '{target_node}' "
+    logger.debug(f"Baked {len(times)} frames from '{source_node}' to '{target_node}' "
           f"on layer '{layer}'")
 
 
@@ -1145,7 +1174,7 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
             elif create_locator:
                 # Create locator at source's position
                 target = cmds.spaceLocator(name=f"{source}_baked")[0]
-                print(f"Created locator: {target}")
+                logger.debug(f"Created locator: {target}")
             else:
                 raise ValueError("No target specified and only one object selected.")
 
@@ -1159,7 +1188,7 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
     if layer != 'BaseAnimation':
         if not cmds.objExists(layer):
             cmds.animLayer(layer)
-            print(f"Created animation layer: {layer}")
+            logger.debug(f"Created animation layer: {layer}")
 
         # Add target to layer
         cmds.select(target, replace=True)
@@ -1180,13 +1209,91 @@ def cloneTransform(source=None, target=None, start_frame=None, end_frame=None,
     return target
 
 
+def cloneTransformBatch(source_target_pairs, start_frame=None, end_frame=None,
+                        layer='BaseAnimation', sample_by=1, euler_filter=False):
+    """
+    Clone multiple transforms efficiently in batch mode.
+    Optimized for handling hundreds of objects at once.
+
+    Args:
+        source_target_pairs (list): List of (source, target) tuples
+        start_frame (int): Start frame. If None, uses timeline start.
+        end_frame (int): End frame. If None, uses timeline end.
+        layer (str): Animation layer to key on. Default: 'BaseAnimation'
+        sample_by (int): Sample every N frames. Default: 1
+        euler_filter (bool): Apply euler unwrapping. Default: False
+
+    Returns:
+        list: Target object names
+
+    Examples:
+        # Clone multiple objects with same frame range
+        pairs = [('source1', 'target1'), ('source2', 'target2'), ('source3', 'target3')]
+        cloneTransformBatch(pairs, start_frame=1, end_frame=100)
+
+        # Clone 100 objects efficiently
+        pairs = [(f'ctrl_{i}', f'baked_{i}') for i in range(100)]
+        cloneTransformBatch(pairs)
+    """
+    if not source_target_pairs:
+        return []
+
+    # Get frame range from timeline if not provided
+    if start_frame is None:
+        start_frame = int(cmds.playbackOptions(query=True, minTime=True))
+    if end_frame is None:
+        end_frame = int(cmds.playbackOptions(query=True, maxTime=True))
+
+    # Generate time list once
+    times = []
+    current_time = start_frame
+    while current_time <= end_frame:
+        times.append(current_time)
+        current_time += sample_by
+
+    logger.debug(f"Batch cloning {len(source_target_pairs)} objects over {len(times)} frames")
+
+    # Ensure all targets are on the layer if needed
+    if layer != 'BaseAnimation':
+        if not cmds.objExists(layer):
+            cmds.animLayer(layer)
+            logger.debug(f"Created animation layer: {layer}")
+
+        # Add all targets to layer at once
+        all_targets = [target for _, target in source_target_pairs]
+        cmds.select(all_targets, replace=True)
+        cmds.animLayer(layer, edit=True, addSelectedObjects=True)
+        cmds.select(clear=True)
+
+    # Process each pair (could be parallelized further in the future)
+    targets = []
+    for i, (source, target) in enumerate(source_target_pairs):
+        if i % 10 == 0:  # Progress logging every 10 objects
+            logger.debug(f"Processing object {i+1}/{len(source_target_pairs)}: {source} -> {target}")
+
+        # Get all matrices using fast API method
+        matrices = getWorldMatricesFast(source, times)
+
+        # Get rotation order
+        rot_order = cmds.getAttr(f"{source}.rotateOrder")
+        rot_order_names = ['xyz', 'yzx', 'zxy', 'xzy', 'yxz', 'zyx']
+        rot_order_str = rot_order_names[rot_order]
+
+        # Set keys using ultra-fast method
+        setTransformKeysOnLayerFast(target, matrices, times, layer,
+                                    attrs=None, rotation_order=rot_order_str,
+                                    euler_filter=euler_filter, source_node=source)
+
+        targets.append(target)
+
+    logger.debug(f"Batch clone complete: {len(targets)} objects processed")
+    return targets
+
+
 """
 Diagnostic tool to trace quickKeys delta calculation.
 Add this to quickKeysHelper.py to debug baking issues.
 """
-import maya.cmds as cmds
-import maya.api.OpenMaya as om2
-
 
 def diagnose_bake_calculation(node, target_layer, frame=1):
     """
@@ -1197,9 +1304,9 @@ def diagnose_bake_calculation(node, target_layer, frame=1):
         target_layer: The layer being baked to (e.g., 'AnimLayer2')
         frame: Frame to diagnose (default: 1)
     """
-    print("\n" + "="*80)
-    print(f"DIAGNOSTIC: Baking '{node}' to layer '{target_layer}' at frame {frame}")
-    print("="*80)
+    logger.debug("\n" + "="*80)
+    logger.debug(f"DIAGNOSTIC: Baking '{node}' to layer '{target_layer}' at frame {frame}")
+    logger.debug("="*80)
 
     # Set current time
     cmds.currentTime(frame)
@@ -1224,14 +1331,14 @@ def diagnose_bake_calculation(node, target_layer, frame=1):
                 ordered_layers.insert(parent_idx + 1, layer)
                 remaining.remove(layer)
 
-    print(f"\nLayer Hierarchy (bottom to top):")
+    logger.debug(f"\nLayer Hierarchy (bottom to top):")
     for i, layer in enumerate(ordered_layers):
         marker = " <-- TARGET" if layer == target_layer else ""
-        print(f"  {i}: {layer}{marker}")
+        logger.debug(f"  {i}: {layer}{marker}")
 
     # FIXED: Composite all layers EXCEPT target (both below and above)
     layers_to_composite = [l for l in ordered_layers if l != target_layer]
-    print(f"\nLayers to composite (all except target): {layers_to_composite}")
+    logger.debug(f"\nLayers to composite (all except target): {layers_to_composite}")
 
     # For each transform attribute, trace the values
     attrs = ['translateX', 'translateY', 'translateZ',
@@ -1239,14 +1346,14 @@ def diagnose_bake_calculation(node, target_layer, frame=1):
              'scaleX', 'scaleY', 'scaleZ']
 
     for attr in attrs:
-        print(f"\n--- {attr} ---")
+        logger.debug(f"\n--- {attr} ---")
 
         # 1. World value (what we want target to be)
         world_val = cmds.getAttr(f"{node}.{attr}")
-        print(f"  World Value (target): {world_val:.6f}")
+        logger.debug(f"  World Value (target): {world_val:.6f}")
 
         # 2. Trace through each layer (all except target)
-        print(f"  Composition breakdown:")
+        logger.debug(f"  Composition breakdown:")
 
         composite = 1.0 if 'scale' in attr else 0.0
 
@@ -1260,7 +1367,7 @@ def diagnose_bake_calculation(node, target_layer, frame=1):
                     pass
 
             if is_muted:
-                print(f"    {layer}: MUTED (skipped)")
+                logger.debug(f"    {layer}: MUTED (skipped)")
                 continue
 
             # Get layer weight
@@ -1288,16 +1395,16 @@ def diagnose_bake_calculation(node, target_layer, frame=1):
             # Compose
             if is_override:
                 composite = curve_val
-                print(f"    {layer}: {curve_val:.6f} (OVERRIDE) -> composite = {composite:.6f}")
+                logger.debug(f"    {layer}: {curve_val:.6f} (OVERRIDE) -> composite = {composite:.6f}")
             else:
                 if 'scale' in attr and scale_mode == 'multiply':
                     old_composite = composite
                     composite *= (1.0 + (curve_val - 1.0) * layer_weight)
-                    print(f"    {layer}: {curve_val:.6f} * weight={layer_weight:.2f} (MULTIPLY) -> composite = {composite:.6f}")
+                    logger.debug(f"    {layer}: {curve_val:.6f} * weight={layer_weight:.2f} (MULTIPLY) -> composite = {composite:.6f}")
                 else:
                     old_composite = composite
                     composite += curve_val * layer_weight
-                    print(f"    {layer}: {curve_val:.6f} * weight={layer_weight:.2f} (ADD) -> composite = {composite:.6f}")
+                    logger.debug(f"    {layer}: {curve_val:.6f} * weight={layer_weight:.2f} (ADD) -> composite = {composite:.6f}")
 
         # 3. Calculate delta
         is_scale = 'scale' in attr
@@ -1315,17 +1422,17 @@ def diagnose_bake_calculation(node, target_layer, frame=1):
                 delta = world_val
             else:
                 delta = world_val / composite
-            print(f"  Delta (multiply mode): {world_val:.6f} / {composite:.6f} = {delta:.6f}")
+            logger.debug(f"  Delta (multiply mode): {world_val:.6f} / {composite:.6f} = {delta:.6f}")
         else:
             delta = world_val - composite
             if attr.startswith('rotate') and deltas:
                 delta = unwrapAngle(delta, deltas[-1])
-            print(f"  Delta (additive mode): {world_val:.6f} - {composite:.6f} = {delta:.6f}")
+            logger.debug(f"  Delta (additive mode): {world_val:.6f} - {composite:.6f} = {delta:.6f}")
 
         # 4. Verify: if we key this delta on target layer, do we get world value?
-        print(f"  Verification: {composite:.6f} + {delta:.6f} = {composite + delta:.6f} (should be {world_val:.6f})")
+        logger.debug(f"  Verification: {composite:.6f} + {delta:.6f} = {composite + delta:.6f} (should be {world_val:.6f})")
 
-    print("\n" + "="*80)
+    logger.debug("\n" + "="*80)
 
 
 def get_layer_curve_value(node, attr, layer, frame):
