@@ -1336,11 +1336,12 @@ def cloneTransformWithOffset(source=None, target=None, start_frame=None, end_fra
         cloneTransformWithOffset(euler_filter=True)
 
     Technical Details:
-        The offset is calculated as: offset = target_world * inverse(source_world)
-        For each frame: new_target_world = source_world * offset
+        The offset is calculated as: offset_local = inverse(source_world) * target_world
+        For each frame: new_target_world = source_world * offset_local
 
-        This maintains the spatial relationship between source and target throughout
-        the animation, exactly like a parent constraint with maintain offset.
+        This captures the target's transform in the source's local space, then applies
+        that local offset to the source at each frame. This maintains the spatial
+        relationship exactly like a parent constraint with maintain offset.
     """
     # Get source and target from selection if not provided
     if source is None or target is None:
@@ -1368,8 +1369,8 @@ def cloneTransformWithOffset(source=None, target=None, start_frame=None, end_fra
     logger.debug(f"  Offset captured at frame: {offset_time}")
     logger.debug(f"  Frame range: {start_frame} to {end_frame}")
 
-    # Get current offset matrix
-    # offset = target_world * inverse(source_world)
+    # Get current offset matrix (the target's transform in the source's local space)
+    # offset_local = inverse(source_world) * target_world
     source_matrix_list = getWorldMatricesFast(source, [offset_time])[offset_time]
     target_matrix_list = getWorldMatricesFast(target, [offset_time])[offset_time]
 
@@ -1377,8 +1378,9 @@ def cloneTransformWithOffset(source=None, target=None, start_frame=None, end_fra
     source_mmatrix = om2.MMatrix(source_matrix_list)
     target_mmatrix = om2.MMatrix(target_matrix_list)
 
-    # Calculate offset: this represents the transform from source space to target space
-    offset_matrix = target_mmatrix * source_mmatrix.inverse()
+    # Calculate offset: target's transform in source's local space
+    # This is the key: we want the local offset, not world offset
+    offset_matrix = source_mmatrix.inverse() * target_mmatrix
 
     logger.debug(f"  Offset matrix calculated")
 
