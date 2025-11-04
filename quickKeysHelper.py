@@ -628,6 +628,51 @@ def getWorldMatricesFast(node, times):
 
     return matrices
 
+def getParentInverseMatricesFast(node, times):
+    """
+    Get Parent Inverse matrices using pure API - no cmds calls.
+
+    Args:
+        node (str): Node name
+        times (list): Frame numbers
+
+    Returns:
+        dict: {time: matrix_as_list}
+    """
+
+    # DEBUG: Verify which node we're reading
+    logger.debug(f"\n=== getParentInverseMatricesFast DEBUG ===")
+    logger.debug(f"Reading matrices from node: {node}")
+
+    # Get the DAG path once
+    selList = om2.MSelectionList()
+    selList.add(node)
+    dag_path = selList.getDagPath(0)
+
+    logger.debug(f"DAG path: {dag_path.fullPathName()}")
+
+    # Get the worldMatrix plug
+    fn_transform = om2.MFnTransform(dag_path)
+    world_matrix_plug = fn_transform.findPlug("parentInverseMatrix", False)
+    world_matrix_plug = world_matrix_plug.elementByLogicalIndex(0)
+
+    matrices = {}
+
+    # Evaluate at each time
+    for time in times:
+        mtime = om2.MTime(time, om2.MTime.uiUnit())
+        ctx = om2.MDGContext(mtime)
+
+        # Get matrix object
+        matrix_obj = world_matrix_plug.asMObject(ctx)
+        matrix_data = om2.MFnMatrixData(matrix_obj)
+        matrix = matrix_data.matrix()
+
+        # Convert to flat list
+        matrices[time] = [matrix.getElement(r, c) for r in range(4) for c in range(4)]
+
+    return matrices
+
 
 def eulerToQuaternion(rx, ry, rz, rotation_order='xyz'):
     """
@@ -1290,6 +1335,173 @@ def cloneTransformBatch(source_target_pairs, start_frame=None, end_frame=None,
     return targets
 
 
+def cloneTransformWithOffset(source=None, target=None, start_frame=None, end_frame=None,
+                              layer='BaseAnimation', sample_by=1, euler_filter=False,
+                              offset_time=None):
+    """
+    Clone animation from source to target while maintaining the current offset between them.
+
+    This is equivalent to baking a parent constraint with "maintain offset" enabled.
+    If the objects are colinear at offset_time, they will have identical animation.
+    If there's an offset, the target will animate as if it was parent-constrained to the source.
+
+    PERFORMANCE: This is extremely fast because:
+    - Offset matrix is computed only once
+    - Matrix multiplication is O(1) per frame (16 multiplies + 12 adds)
+    - Uses optimized API matrix operations
+    - Bypasses all DG evaluation
+
+    Args:
+        source (str): Source object name. If None, uses first selection.
+        target (str): Target object name. If None, uses second selection.
+        start_frame (int): Start frame. If None, uses timeline start.
+        end_frame (int): End frame. If None, uses timeline end.
+        layer (str): Animation layer to key on. Default: 'BaseAnimation'
+        sample_by (int): Sample every N frames. Default: 1 (every frame)
+        euler_filter (bool): If True, apply euler unwrapping to prevent rotation flips. Default: False
+        offset_time (float): Time at which to capture the offset. If None, uses current time.
+
+    Returns:
+        str: Target object name
+
+    Examples:
+        # Select source then target, clone with current offset:
+        cloneTransformWithOffset()
+
+        # Specify objects by name:
+        cloneTransformWithOffset('pSphere1', 'pCube1')
+
+        # Custom frame range:
+        cloneTransformWithOffset(start_frame=10, end_frame=100)
+
+        # Capture offset at frame 1, apply to frames 10-100:
+        cloneTransformWithOffset(start_frame=10, end_frame=100, offset_time=1)
+
+        # With euler filtering for smooth rotations:
+        cloneTransformWithOffset(euler_filter=True)
+
+    Technical Details:
+        The offset is calculated as: offset_local = inverse(source_world) * target_world
+        For each frame: new_target_world = source_world * offset_local
+
+        This captures the target's transform in the source's local space, then applies
+        that local offset to the source at each frame. This maintains the spatial
+        relationship exactly like a parent constraint with maintain offset.
+    """
+    # Get source and target from selection if not provided
+    if source is None or target is None:
+        sel = cmds.ls(selection=True, transforms=True)
+
+        if len(sel) < 2:
+            raise ValueError("Please select source and target objects, or provide them as arguments.")
+
+        if source is None:
+            source = sel[0]
+        if target is None:
+            target = sel[1]
+
+    # Get frame range from timeline if not provided
+    if start_frame is None:
+        start_frame = int(cmds.playbackOptions(query=True, minTime=True))
+    if end_frame is None:
+        end_frame = int(cmds.playbackOptions(query=True, maxTime=True))
+
+    # Get offset capture time
+    if offset_time is None:
+        offset_time = cmds.currentTime(query=True)
+
+    logger.debug(f"Cloning transform with offset from '{source}' to '{target}'")
+    logger.debug(f"  Offset captured at frame: {offset_time}")
+    logger.debug(f"  Frame range: {start_frame} to {end_frame}")
+
+    # Get current offset matrix (the target's transform in the source's local space)
+    # offset_local = inverse(source_world) * target_world
+    source_matrix_list = getWorldMatricesFast(source, [offset_time])[offset_time]
+    target_matrix_list = getWorldMatricesFast(target, [offset_time])[offset_time]
+
+    # Convert to MMatrix objects for fast multiplication
+    source_mmatrix = om2.MMatrix(source_matrix_list)
+    target_mmatrix = om2.MMatrix(target_matrix_list)
+
+    """
+    # We do this per frame now
+    # Get the worldMatrix plug
+    selList = om2.MSelectionList()
+    selList.add(target)
+    dag_path = selList.getDagPath(0)
+    fn_transform = om2.MFnTransform(dag_path)
+    parent_inverse_plug = fn_transform.findPlug("parentInverseMatrix", False)
+    parent_inverse_plug = parent_inverse_plug.elementByLogicalIndex(0)
+
+    mtime = om2.MTime(offset_time, om2.MTime.uiUnit())
+    ctx = om2.MDGContext(mtime)
+
+    # Get matrix object
+    matrix_obj = parent_inverse_plug.asMObject(ctx)
+    matrix_data = om2.MFnMatrixData(matrix_obj)
+    target_inverse_parentmatrix = matrix_data.matrix()
+    """
+
+    # Calculate offset: target's transform in source's local space
+    # This is the key: we want the local offset, not world offset
+    offset_matrix = target_mmatrix * source_mmatrix.inverse()
+
+    logger.debug(f"  Offset matrix calculated")
+
+    # Generate time list
+    times = []
+    current = start_frame
+    while current <= end_frame:
+        times.append(current)
+        current += sample_by
+
+    logger.debug(f"  Processing {len(times)} frames")
+
+    # Get source matrices at all times (single fast API call)
+    source_matrices = getWorldMatricesFast(source, times)
+
+    # Get source matrices at all times (single fast API call)
+    target_inverse_parent_matrices = getParentInverseMatricesFast(target, times)
+
+    # Apply offset to each source matrix
+    # This is the core operation: new_target = source * offset
+    offset_matrices = {}
+    for time in times:
+        # Convert list to MMatrix
+        source_m = om2.MMatrix(source_matrices[time])
+        # Convert list to MMatrix
+        target_inverse_parentmatrix = om2.MMatrix(target_inverse_parent_matrices[time])
+        # Apply offset transform
+        result_m = offset_matrix * source_m * target_inverse_parentmatrix
+        # Convert back to list for setTransformKeysOnLayerFast
+        offset_matrices[time] = [result_m.getElement(r, c) for r in range(4) for c in range(4)]
+
+    # Get rotation order from target
+    rot_order = cmds.getAttr(f"{target}.rotateOrder")
+    rot_order_names = ['xyz', 'yzx', 'zxy', 'xzy', 'yxz', 'zyx']
+    rot_order_str = rot_order_names[rot_order]
+
+    # Ensure target is on the layer (required for non-BaseAnimation layers)
+    if layer != 'BaseAnimation':
+        if not cmds.objExists(layer):
+            cmds.animLayer(layer)
+            logger.debug(f"  Created animation layer: {layer}")
+
+        # Add target to layer
+        cmds.select(target, replace=True)
+        cmds.animLayer(layer, edit=True, addSelectedObjects=True)
+        cmds.select(clear=True)
+
+    # Set keys using ultra-fast method
+    setTransformKeysOnLayerFast(target, offset_matrices, times, layer,
+                                attrs=None, rotation_order=rot_order_str,
+                                euler_filter=euler_filter, source_node=source)
+
+    logger.debug(f"Clone with offset complete: '{target}' now follows '{source}' with offset maintained")
+
+    return target
+
+
 """
 Diagnostic tool to trace quickKeys delta calculation.
 Add this to quickKeysHelper.py to debug baking issues.
@@ -1598,12 +1810,13 @@ def cprofile_function(func):
 # ============================================================================
 # Run when executed
 # ============================================================================
+
 @cprofile_function
 def run():
-    cloneTransform('test16_source', 'test16_target', start_frame=1, end_frame=100, layer="TargetLayer", euler_filter=True)
+    # cloneTransform('test16_source', 'test16_target', start_frame=1, end_frame=100, layer="TargetLayer", euler_filter=True)
     # cloneTransform(start_frame=1, end_frame=1000, euler_filter=False)
     # bakeTransformToLayer('test16_source', 'test16_target', start_frame=1, end_frame=100, euler_filter=True)
-
+    cloneTransformWithOffset(start_frame=1, end_frame=1000, euler_filter=False)
+    cmds.refresh()
 if __name__ == "__main__":
     run()
-
