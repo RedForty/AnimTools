@@ -612,19 +612,26 @@ def getWorldMatricesFast(node, times):
     world_matrix_plug = world_matrix_plug.elementByLogicalIndex(0)
 
     matrices = {}
+    matrix_data = om2.MFnMatrixData()
 
     # Evaluate at each time
     for time in times:
         mtime = om2.MTime(time, om2.MTime.uiUnit())
         ctx = om2.MDGContext(mtime)
-
-        # Get matrix object
+        # Get matrix object (this is the safe way for worldMatrix + context)
         matrix_obj = world_matrix_plug.asMObject(ctx)
-        matrix_data = om2.MFnMatrixData(matrix_obj)
+        matrix_data.setObject(matrix_obj)  # Reuse the function set!
         matrix = matrix_data.matrix()
+        # Faster flattening - direct indexing
+        matrices[time] = [matrix[i] for i in range(16)]
 
-        # Convert to flat list
-        matrices[time] = [matrix.getElement(r, c) for r in range(4) for c in range(4)]
+        ''' # Tried this experiment but no go
+        mtime = om2.MTime(time, om2.MTime.uiUnit())
+        ctx = om2.MDGContext(mtime)
+        matrix_handle = world_matrix_plug.asMDataHandle(ctx)
+        matrix = matrix_handle.asMatrix()
+        matrices[time] = [matrix[i] for i in range(16)]
+        '''
 
     return matrices
 
@@ -660,6 +667,7 @@ def getParentInverseMatricesFast(node, times):
 
     # Evaluate at each time
     for time in times:
+
         mtime = om2.MTime(time, om2.MTime.uiUnit())
         ctx = om2.MDGContext(mtime)
 
@@ -670,6 +678,14 @@ def getParentInverseMatricesFast(node, times):
 
         # Convert to flat list
         matrices[time] = [matrix.getElement(r, c) for r in range(4) for c in range(4)]
+
+        ''' # Tried this experiment but the results are terrible (not even good transformations)
+        mtime = om2.MTime(time, om2.MTime.uiUnit())
+        ctx = om2.MDGContext(mtime)
+        matrix_handle = world_matrix_plug.asMDataHandle(ctx)
+        matrix = matrix_handle.asMatrix()
+        matrices[time] = [matrix[i] for i in range(16)]
+        '''
 
     return matrices
 
@@ -1813,10 +1829,11 @@ def cprofile_function(func):
 
 @cprofile_function
 def run():
+    cloneTransform()
     # cloneTransform('test16_source', 'test16_target', start_frame=1, end_frame=100, layer="TargetLayer", euler_filter=True)
-    # cloneTransform(start_frame=1, end_frame=1000, euler_filter=False)
+    # cloneTransform(start_frame=1, end_frame=10000, euler_filter=False)
     # bakeTransformToLayer('test16_source', 'test16_target', start_frame=1, end_frame=100, euler_filter=True)
-    cloneTransformWithOffset(start_frame=1, end_frame=1000, euler_filter=False)
-    cmds.refresh()
+    # cloneTransformWithOffset(start_frame=1, end_frame=1000, euler_filter=False)
+    # cmds.refresh()
 if __name__ == "__main__":
     run()
